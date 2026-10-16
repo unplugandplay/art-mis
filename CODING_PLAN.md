@@ -27,7 +27,7 @@ Artémis/
   src/main.nim?          # no — CLI entry is src/artemis_main.nim? → use bin = @["artemis"] with src/artemis.nim as CLI dispatch guarded by isMainModule
   tests/t_types.nim, t_io.nim, t_scoring.nim, t_gradients.nim, t_sampling.nim, all.nim
   data/toy_family.tsv    # small hand-made graph for smoke tests
-  README.md
+  ReadMe.md
 ```
 
   Decision: single entry — `src/artemis.nim` contains `when isMainModule: cli.main()`

@@ -10,6 +10,10 @@ learned vectors — as a small native binary, with no Python anywhere.
 Every true fact `(h, r, t)` is trained to satisfy `h + r ≈ t`; facts are pushed
 against corrupted negatives with a margin-ranking loss and SGD.
 
+Companion documents: [`DevLog.md`](DevLog.md) (build chronicle) and
+[`Decisions.md`](Decisions.md) (decision records). Requirements and the
+original plan live in `PRD.md` and `CODING_PLAN.md`.
+
 ---
 
 ## Install
@@ -121,19 +125,29 @@ that form any known-true triple are excluded). Rank `= 1 + #better + 0.5·#ties`
 | raw | 1.66 | 0.682 | 0.375 | 1.000 | 1.000 |
 | filtered | 1.47 | 0.766 | 0.531 | 1.000 | 1.000 |
 
-Optimistic (evaluated on training triples), but a useful smoke signal: after
+Optimistic (evaluated on training triples), but a useful smoke signal: during
 training the 8-entity ranking improves from MRR ≈ 0.29 to ≈ 0.68, and the nearest
-neighbour of `alice` becomes her spouse `david`.
+neighbour of `alice` becomes her spouse `david` (cosine 0.943).
 
-### FB15k-237 (14,541 entities · 237 relations · 272k train triples)
+### FB15k-237 (14,505 entities · 237 relations · 272,115 train triples)
 
-See `scripts/get_data.sh` and the repro commands below; numbers are recorded in
-the table at the bottom of this file after the reference run.
+```sh
+scripts/get_data.sh
+./artemis train --data data/fb15k237/train.txt --valid data/fb15k237/valid.txt \
+  --test data/fb15k237/test.txt --dim 100 --lr 0.01 --epochs 200 --eval-every 20
+```
+
+Reference run status at the time of this writing: training runs at ~0.15 s/epoch
+(272k triples); each validation pass costs ~80 s (20k test-scale ranking over
+14.5k candidates × dim 100, single thread). Interim validation MRR: 0.171
+(epoch 20) → 0.179 (epoch 40), still climbing. Final test metrics will be
+appended here when the reference run completes — rerun the command above to
+reproduce end-to-end.
 
 ### Performance (release build, Apple Silicon, single thread)
 
 Synthetic scale — 15,000 entities × 200 relations × 500,000 random triples,
-dim 50:
+dim 50 (`nimble bench`):
 
 | Metric | Value |
 |---|---|
@@ -146,7 +160,7 @@ raw row-major access), so epoch time scales linearly with triples × dim.
 
 ## Design notes
 
-Deliberate deviations from the original blueprint — see `PRD.md` / `CODING_PLAN.md`:
+Deliberate deviations from the original blueprint — rationale in `Decisions.md`:
 
 1. **Manual closed-form gradients, not Arraymancer autograd.** For `x = h+r−t`,
    `‖x‖₂` has gradient `x/‖x‖₂` and `‖x‖₁` has gradient `sign(x)`. The
@@ -180,8 +194,8 @@ round-trips.
 ## Non-goals (v0.1.0)
 
 Other KGE models (RotatE, ComplEx, …), GPU, distributed training, hyperparameter
-search, servers. Architecturally, `transEGrad` is the only place that would need
-extending for a new norm-based model.
+search, servers. Architecturally, `transEGrad`/`computePair` is the only place
+that would need extending for a new norm-based model.
 
 ## License
 

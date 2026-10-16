@@ -1,0 +1,107 @@
+# Artemis — Dev Log
+
+Chronicle of the v0.1.0 build session (2026-10-16, branch `toy`).
+Requirements: `PRD.md`. Plan: `CODING_PLAN.md`. Rationale for every choice:
+`Decisions.md`.
+
+---
+
+## Phase 0 — Scaffolding
+
+- `artemis.nimble` (package `artemis`, bin + lib from `src/artemis.nim`),
+  `config.nims` (`--mm:orc`, `--path:src`), `data/toy_family.tsv`
+  (16 triples, 8 entities, 3 relations), directory tree per plan.
+- **Arraymancer 0.7.33** installed via nimble. A probe program established the
+  raw-access API before any hot-path code was written:
+  - `unsafe_raw_data` **does not exist** in this version →
+  - `t.unsafe_raw_buf()` (mutable raw view) and `t.storage.raw_buffer`
+    (`ptr UncheckedArray[float32]`) do; BLAS links fine on this machine
+    (`libblas.dylib` / Accelerate).
+- Gate: `nimble build` → `artemis --help` ✓.
+
+## Phases 1–5 — Data pipeline, model, scoring, sampling, gradients
+
+- All modules written in one pass: `types`, `io`, `embeddings`, `scoring`,
+  `sampling`, `gradients`, then `evaluate`, `persist`, `train`, `cli`.
+- Compile-fix iterations (Nim strictness, all benign):
+  1. `config.nims`: `thisDir() / "src"` required `import std/os` in nimscript.
+  2. `src/artemis/export.nim` collided with the `export` keyword → renamed
+     **`persist.nim`**.
+  3. `Stream.readData` results must be explicitly `discard`ed.
+  4. Missing imports surfaced iteratively: `std/tables` (persist),
+     `std/math` (`sqrt`, `NaN`), `std/algorithm` (sort), `sampling` in cli.
+  5. **parseopt gotcha**: `--key value` (space-separated) yields the value as a
+     separate `cmdArgument`; rewrote `collectOpts` as a pending-key state
+     machine with a known-flags list.
+- First end-to-end run: `train` on the toy graph, 20 epochs, loss 0.83 → 0.30,
+  checkpoint + TSV + JSON written.
+
+## Test suite (Phases 1–8 acceptance)
+
+28 tests across 8 files, all green. Three findings worth recording:
+
+1. **Finite-difference test (t_gradients)** — first version compared `dL/dh`
+   against `gPos` alone; but the fixture's negative shares the positive's head
+   (tail corruption), so the true analytic value is `gPos − gNeg`. The
+   *implementation* was correct; the *test* was fixed, and now also checks
+   `dL/dt = −gPos` and `dL/dt_neg = +gNeg` numerically.
+2. **evaluate `$` printed sums, not means** — `MR=59` on an 8-entity graph gave
+   it away instantly. Fixed by dividing by `n`.
+3. **Toy-convergence metric was wrong** — the plan asked for "mean training
+   distance ≪ initial". On an 8-entity graph the margin objective is
+   satisfiable with large relation vectors: mean loss reached ~0.1 while mean
+   distance stayed ~7.7 (initial 9.85). Ranking quality is the correct signal:
+   raw MRR 0.29 → 0.68, Hits@3 0.31 → 0.91, filtered Hits@1 6% → 53%. Test
+   rewritten around ranking + loss-ratio assertions.
+
+Also verified: sampling distribution sanity (Bernoulli ratio 0.9 ± 0.02 on a
+skewed relation, uniform 0.5 ± 0.03, exactly-one-side corruption, bounded
+retries), unit-norm invariants after init/training, bit-exact checkpoint
+round-trips, determinism (same seed ⇒ identical embeddings, different seed ⇒
+different).
+
+## Benchmarks (Phase 10)
+
+- **Synthetic** (`nimble bench`): 15k entities × 200 relations × 500k triples,
+  dim 50, release build, single thread:
+  **0.59 s/epoch · ~851,000 triples/s · 273 MB peak RSS** — 12× inside the
+  PRD's NFR-1 budget (≤ 30 s/epoch at FB15k scale), well under the 2 GB NFR-2.
+- **CLI end-to-end**: train → eval → nearest → export on the toy graph; exported
+  TSV loads in numpy with unit norms (scripts/check_export.py); `nearest alice`
+  → `david` (spouse) at cosine 0.943 — semantically right.
+
+## FB15k-237 reference run (Phase 7 gate)
+
+- `scripts/get_data.sh` fetched and unpacked the official Microsoft archive:
+  272,115 / 17,526 / 20,438 triples (train/valid/test), 14,505 entities,
+  237 relations; 37 valid/test triples mention names absent from the train
+  vocab and are skipped with a warning.
+- Reference run launched: `--dim 100 --lr 0.01 --epochs 200 --eval-every 20
+  --bern` (early stopping, patience 5).
+  - Training: **0.15 s/epoch**; validation ranking pass: ~80 s.
+  - Interim validation MRR: **0.171 (epoch 20) → 0.179 (epoch 40)**, climbing.
+  - Final test metrics to be appended to `ReadMe.md` when the run completes;
+    the exact repro command is in the README.
+
+## Housekeeping
+
+- GitHub Actions CI added (ubuntu, Nim 2.0.14, OpenBLAS, `nimble build` +
+  `nimble test`).
+- CODING_PLAN checkboxes updated to reflect reality; the HogWild threads
+  stretch is explicitly marked *skipped in v0.1.0* to protect determinism.
+- Dataset archives and checkpoints are gitignored (`data/fb15k237/`, `*.bin`).
+
+## State at close of session
+
+| Milestone | Status |
+|---|---|
+| M1 scaffolding + data pipeline | ✅ |
+| M2 core model (init/norm/scoring/gradients) | ✅ |
+| M3 training loop (+ sampling, checkpoints) | ✅ |
+| M4 evaluation (fixture exact, FB15k run in flight) | ✅ / ⏳ |
+| M5 CLI + export + docs | ✅ |
+| Perf + memory gates (release) | ✅ |
+| v0.1.0 tag | ✅ |
+
+Tests: **28/28 green**. Next session: harvest FB15k-237 test metrics into the
+README results table; optional: `--threads` stretch, more KGE norms.

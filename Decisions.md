@@ -1,0 +1,192 @@
+# Artemis — Decision Records
+
+Each entry: **decision → context → consequence**. The five "locked" decisions
+from `CODING_PLAN.md` are marked (L).
+
+---
+
+## D1 — Manual closed-form gradients, not Arraymancer autograd (L)
+
+**Decision.** The SGD step applies the analytic TransE gradients directly to the
+affected embedding rows; autograd is not used in the hot path.
+
+**Context.** The original blueprint left the update as a `discard` placeholder
+with a comment that autograd would handle it. For `x = h + r − t` the gradient
+of `‖x‖₂` is `x/‖x‖₂` and of `‖x‖₁` is `sign(x)` — trivial closed forms. Only
+3–4 embedding rows change per step, and Arraymancer autograd on row slices
+would allocate temporaries and fight the in-place update model.
+
+**Consequence.** Zero-allocation hot loop; gradient correctness is pinned by a
+finite-difference test (`tests/t_gradients.nim`, tolerance 1e-2 on float32).
+If a non-norm model is ever added, this module is where autograd would return.
+
+## D2 — Unit-norm constraint on entities after every update (L)
+
+**Decision.** Entity rows are re-projected onto the unit L2 sphere after
+initialization and after every update that touches them; relation rows are
+unconstrained.
+
+**Context.** The TransE paper constrains ‖e‖₂ ≤ 1; the blueprint omitted it.
+
+**Consequence.** An invariant test enforces ‖e‖ = 1 ± 1e-4 after training.
+Rows shared between the positive and negative update are normalized twice,
+which is idempotent and therefore harmless.
+
+## D3 — Fused loops over raw storage instead of Arraymancer broadcasting (L)
+
+**Decision.** Per-triple scoring, gradients, and updates run over
+`storage.raw_buffer` (`ptr UncheckedArray[float32]`) in one fused pass per
+distance; Arraymancer is used for storage, `newTensor`, and `toRawSeq`.
+
+**Context.** The plan allowed broadcasting for batched eval scoring, with a
+fallback to fused loops. Fused loops were chosen outright after the probe:
+same O(n·dim) complexity, zero temporaries, no allocation.
+
+**Consequence.** ~851k triples/s single-threaded at dim 50; 273 MB RSS at
+15k × 500k scale. The code depends on only a small, stable slice of
+Arraymancer's API (see D5).
+
+## D4 — Sequential update application for shared rows (L)
+
+**Decision.** The positive-side update (`h ← h − ηgPos`, `r ← r − ηgPos`,
+`t ← t + ηgPos`) and the negative-side update (`h' ← h' + ηgNeg`,
+`r' ← r' + ηgNeg`, `t' ← t' − ηgNeg`) are applied in sequence to whichever rows
+they name, rather than special-casing head- vs tail-corruption.
+
+**Context.** `r` is always shared between the pair; one of `h`/`t` is shared
+depending on the corrupted side. Floating-point addition commutes well enough
+at float32 here, and the pattern stays correct for both corruption modes.
+
+**Consequence.** One uniform code path; both corruption modes verified
+numerically by the finite-difference test (`dL/dh = gPos − gNeg` caught an
+initial test bug, not an implementation bug).
+
+## D5 — Raw-storage API verified by probe before implementation (L)
+
+**Decision.** `Tensor[float32]` with row-major layout, row `i` at
+`i*dim ..< (i+1)*dim`, accessed via `storage.raw_buffer`.
+
+**Context.** `unsafe_raw_data` (used in some Arraymancer versions) does not
+exist in 0.7.33; a probe program confirmed `storage.raw_buffer` is
+`ptr UncheckedArray[float32]` there, and that `unsafe_raw_buf`/`toRawSeq`/
+`newTensor` all work with `--mm:orc`.
+
+**Consequence.** If Arraymancer ever breaks, re-implementing the storage over
+`seq[float32]` touches only `types.nim` + the accessor lines — the PRD's
+stated risk mitigation.
+
+## D6 — `export.nim` renamed to `persist.nim`
+
+**Decision.** The persistence module is `persist.nim`.
+
+**Context.** `export` is a Nim keyword; a module named `export` cannot appear
+in an `export` list.
+
+**Consequence.** No keyword gymnastics; `export ... persist` reads fine.
+
+## D7 — Determinism by construction (L)
+
+**Decision.** Ids are assigned in first-appearance order; all randomness flows
+through `std/random` `Rand` instances seeded from `HyperParams.seed` (model
+init) and a fresh `initRand(hp.seed)` inside `train` (shuffling + sampling).
+
+**Context.** PRD acceptance criterion: same seed + data ⇒ identical
+embeddings.
+
+**Consequence.** Bit-exact reproducibility is tested (toy training twice with
+seed 42 compares equal via `rawCopy`). Multi-threaded HogWild training would
+break this invariant — hence D12.
+
+## D8 — Negative sampling: uniform + Bernoulli, bounded retries
+
+**Decision.** Corruption side is chosen per relation with
+P(corrupt head) = tph/(tph+hpt) in Bernoulli mode (one-to-many relations
+corrupt the head more often), else 0.5. Candidates are resampled up to 10
+times to avoid known-true triples, then accepted as-is.
+
+**Context.** The TransH-lineage "bern" trick; exact truth-avoidance is
+impossible on saturated vocabularies (toy test proves termination).
+
+**Consequence.** Distribution sanity is tested (0.9 ± 0.02 on a skewed
+relation; uniform 0.5 ± 0.03); the best-effort nature is documented in the
+PRD risk table.
+
+## D9 — Rank formula: average tie handling
+
+**Decision.** `rank = 1 + #better + 0.5·#ties` against all candidates; both
+head and tail ranks are pooled into one metric set; filtered ranks skip
+candidates forming any train∪valid∪test triple.
+
+**Context.** Standard link-prediction protocol; ties are rare with float32
+scores but must not crash the math.
+
+**Consequence.** Hand-computed fixture test (3 entities) pins exact raw and
+filtered ranks, MRR, and Hits@k.
+
+## D10 — CLI option parsing: pending-key state machine
+
+**Decision.** `collectOpts` treats space-separated values (`--data x`) by
+parking the key and consuming the next `cmdArgument`; a fixed list of boolean
+flags (`quiet`, `bern`, `no-bern`, `help`) is exempt.
+
+**Context.** `std/parseopt` yields `--key value` values as separate arguments
+(probe-verified) rather than attaching them to `p.val`.
+
+**Consequence.** Both `--key value` and `--key=value` work; misuse produces
+clear errors ("option --data expects a value").
+
+## D11 — Convergence measured by ranking, not raw distance
+
+**Decision.** Toy-graph convergence tests assert loss ratio and ranking
+quality (MRR, Hits@3), not mean training-triple distance.
+
+**Context.** On tiny vocabularies the margin objective is satisfiable with
+large relation vectors: mean loss ~0.1 coexisted with mean distance ~7.7
+(initial 9.85). Distance-only assertions would either fail or be meaningless.
+
+**Consequence.** The test now captures what actually matters (the model ranks
+true triples first); observed seed-42 trajectory: MRR 0.29 → 0.68.
+
+## D12 — Threads stretch skipped in v0.1.0
+
+**Decision.** No HogWild `--threads:on` mode ships yet.
+
+**Context.** PRD NFR-5 lists parallelism as a stretch goal; it conflicts with
+the determinism acceptance criterion (D7).
+
+**Consequence.** Single-thread default is deterministic and already 12× inside
+the performance budget; threads remain a flagged, opt-in future feature.
+
+## D13 — Checkpoint format: magic + version + embedded vocab
+
+**Decision.** Binary layout `ARTECKPT` magic, version u32, dims, hyperparams
+(norm, bernoulli, margin, lr, seed), name tables, raw float32 payload,
+native little-endian.
+
+**Context.** `nearest`/`eval` need the vocabulary to resolve names; TSV alone
+cannot round-trip bit-exactly.
+
+**Consequence.** Bit-exact round-trip is tested; unknown files raise a clear
+`ValueError`; version field guards future format changes.
+
+## D14 — L1 is the default norm; L2 is supported
+
+**Decision.** `HyperParams.norm` defaults to `nkL1` (paper's best setting);
+`--norm l2` matches the original blueprint's formulation.
+
+**Context.** The blueprint used L2; the paper reports L1 as superior.
+
+**Consequence.** Both norms share one code path via `NormKind`; L2 is what the
+finite-difference test exercises (smooth gradient), L1 via `sign` is exercised
+by training tests.
+
+## D15 — Tests import stdlib modules explicitly
+
+**Decision.** Test files import `std/tables`, `std/math`, etc. directly even
+when library modules already import them.
+
+**Context.** Nim's `import` is not transitive: a `Table` field is visible
+through a type, but its procs are not.
+
+**Consequence.** Slightly noisier imports; zero ambiguity about where procs
+come from.
