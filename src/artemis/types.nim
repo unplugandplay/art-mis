@@ -4,7 +4,7 @@
 import std/[tables, hashes]
 import arraymancer
 
-const ArtemisVersion* = "0.3.0"
+const ArtemisVersion* = "0.4.0"
   ## Keep in sync with `version` in `artemis.nimble` (and the release tag);
   ## `artemis --version` prints it, so a built binary is self-identifying.
 
@@ -14,8 +14,10 @@ type
     head*, rel*, tail*: int
 
   RawTriple* = tuple
-    ## A fact as raw strings, straight from the parser.
+    ## A fact as raw strings, straight from the parser. `weight` is 1.0 unless
+    ## the input carried an explicit weight column / edge label.
     head, relation, tail: string
+    weight: float32
 
   Vocab* = object
     ## Bidirectional name <-> id mapping. Ids follow first-appearance order,
@@ -26,6 +28,16 @@ type
   NormKind* = enum
     nkL1, nkL2
 
+  WeightMode* = enum
+    ## How edge weights are used during training.
+    wmSample ## draw positives with probability proportional to weight
+    wmStep   ## visit every edge once per epoch, but scale its step by weight
+
+  WeightNorm* = enum
+    ## Scale of the per-edge step in `wmStep`.
+    wnMean ## divide by the mean weight, preserving the average step size
+    wnMax  ## divide by the max weight, so every step is <= lr
+
   LrSchedule* = enum
     ## How the SGD learning rate changes across epochs.
     lsConstant    ## `lr` unchanged (v0.1.0 behaviour)
@@ -34,6 +46,8 @@ type
 
   Dataset* = object
     train*, valid*, test*: seq[Triple]
+    weights*: seq[float32] ## per training triple; 1.0 when unweighted
+                           ## (empty when the file had no weight column)
 
   HyperParams* = object
     dim*: int = 50
@@ -55,6 +69,10 @@ type
     delimiter*: char = '\t'
     quiet*: bool = false
     threads*: int = 1     ## evaluation worker threads (0 = one per core)
+    useWeights*: bool = true       ## honour a weight column when present
+    weightMode*: WeightMode = wmSample
+    weightPower*: float32 = 1.0    ## weights are raised to this power first
+    weightNorm*: WeightNorm = wnMean
 
   TransEModel* = object
     ## Entity and relation embeddings. Row-major storage: row `i` of a
@@ -62,6 +80,16 @@ type
     entities*, relations*: Vocab
     entityEmb*: Tensor[float32] ## [nEntities, dim]
     relEmb*: Tensor[float32]    ## [nRelations, dim]
+
+proc `$`*(m: WeightMode): string =
+  case m
+  of wmSample: "sample"
+  of wmStep: "step"
+
+proc `$`*(n: WeightNorm): string =
+  case n
+  of wnMean: "mean"
+  of wnMax: "max"
 
 proc `$`*(s: LrSchedule): string =
   case s

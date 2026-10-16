@@ -3,6 +3,10 @@ import std/tables
 import arraymancer
 import artemis/types
 
+proc rt*(head, rel, tail: string, weight = 1.0'f32): RawTriple =
+  ## Terse constructor for a parsed triple, with an optional weight.
+  (head: head, relation: rel, tail: tail, weight: weight)
+
 proc makeVocab*(names: seq[string]): Vocab =
   result.names = names
   for i, n in names:

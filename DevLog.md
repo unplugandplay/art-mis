@@ -314,3 +314,61 @@ Kept working: `evaluate`'s candidate universe and `predict`'s differ only by
 intent (evaluate knows the true entity, a query does not), and the `predict`
 tests pin that distinction. Suite 39 → **68 tests**; `artemis --version` reports
 0.3.0.
+
+---
+
+## Session 5 — weighted graphs (v0.4.0)
+
+Requested: apply the diagram→TransE pipeline to *weighted* graphs. The design
+question is where a weight belongs, since TransE has a margin loss and the SGD
+step is a fixed-length sign step (`lr · sign(∇)`), so a weight cannot be folded
+into the gradient the way it could with a squared loss.
+
+- **Input** — `RawTriple` gained a `weight` field; `parseLine` accepts an
+  optional 4th column (finite and strictly positive, otherwise the line is
+  malformed rather than silently unweighted); `Dataset.weights` is parallel to
+  the kept training triples, so a skipped/rare triple can never shift it.
+  `artemis mermaid` reads `rel:weight` and bare-number edge labels, keeps the
+  strongest claim when an edge is repeated, and only emits the 4th column when
+  it is not 1.0 (so unweighted output is unchanged).
+- **Training** — two modes, both normalised so `--lr` keeps its meaning:
+  `wmSample` (default) draws one positive per edge per epoch with probability
+  ∝ `w^power` — the maximum-likelihood reading of intensity/count weights;
+  `wmStep` visits every edge once and scales its step by `w^power` divided by
+  the mean (or max) weight — the natural reading of confidence weights.
+  `--weight-power 0`, an all-ones vector, and `--no-weights` are all exactly the
+  unweighted run; the step loop shuffles *positions* so a weight travels with
+  its edge, and the shuffle consumes the same RNG stream, which is why the
+  all-ones case is bit-identical rather than merely close.
+- **Tests** (68 → 83): weight parsing (missing, zero, negative, NaN, inf, junk),
+  weight/triple alignment through `loadDataset`, Mermaid label weights and
+  strongest-wins dedup, bit-exactness of all-ones and `--weight-power 0`, a
+  degenerate all-zero vector falling back to uniform, determinism, and a paired
+  fixture (two disjoint triples, weights swapped) proving the heavier edge ends
+  up tighter in both modes.
+
+### What the weights actually do, measured
+
+`examples/collaboration.mmd` — two teams, strong ties inside (0.9/0.8), weak
+ties across (0.1). Training on it and asking for Ada's collaborators:
+
+```
+weighted (default)                 --weight-power 0
+Cy   11.96961   (0.9)              Cy   12.05626   (0.9)
+Di   12.58934   (0.8)              Di   12.14532   (0.8)
+Bo   12.65133   (0.9)              Guo  12.22882   (0.1)  <- weak tie
+Guo  13.47154   (0.1)              Bo   12.22988   (0.9)
+Hana 13.63556   (0.1)              Eve  12.25033   (0.1)
+```
+
+The weighted model orders every strong tie ahead of every weak one; ignoring the
+weights interleaves them and squeezes the top of the list into 12.06–12.25.
+
+Negative result, recorded because it matters: on toy graphs the *link-prediction*
+metrics do **not** separate the two runs. Holding out edges from the company
+example (and, separately, injecting 40 low-confidence junk edges) gives filtered
+MRR 1.00 for both, and 2–6 held-out triples is far too few to read a difference
+either way. Weights are about how hard each edge is pulled — which is what the
+listing above and the test suite demonstrate — not a magic link-prediction
+boost that can be shown on eleven entities. A real evaluation would need a large
+graph with genuine confidence labels.

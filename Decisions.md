@@ -330,3 +330,31 @@ documented demo command, tests pin the axis on a one-dimensional fixture and the
 separation of two clusters, and XML escaping of entity names is tested (labels
 come from user diagrams). Degenerate models (all vectors identical, or a single
 entity) project to a point instead of dividing by zero.
+
+## D23 — Edge weights scale how hard an edge is fitted, in two modes
+
+**Decision.** A triple may carry a weight (4th TSV column, or a Mermaid
+`rel:weight` / bare-number edge label). `--weight-mode sample` (default) draws
+one positive per edge per epoch with probability ∝ `weight^power`;
+`--weight-mode step` visits every edge once and scales that edge's SGD step by
+`weight^power / mean(weight^power)` (or `/ max`, with `--weight-norm max`).
+`--weight-power 0` and `--no-weights` ignore weights entirely.
+
+**Context.** TransE's update is `lr · sign(∇)` when the margin is violated: a
+fixed-length step, not a gradient of a weighted loss, so a weight cannot be
+folded into the objective the way it could with squared error. Two readings of
+"weight" are common and they want different treatment: *counts/intensity*
+(how often the fact was observed — the edge should be visited more) and
+*confidence* (how much to trust it — the edge should pull harder per visit).
+
+**Consequence.** Both readings are supported, both normalised so `--lr` keeps
+its meaning, and the equivalence cases are tested rather than asserted: all-ones
+weights (and `--weight-power 0`, and an all-zero vector falling back to uniform)
+reproduce the unweighted run bit for bit, because the step-mode loop shuffles
+positions with the same RNG stream the triple shuffle used. A paired fixture
+(two disjoint triples, weights swapped) pins the semantic: the heavier edge ends
+up tighter in both modes. Measured on `examples/collaboration.mmd`, the weighted
+run orders all strong ties ahead of every weak one while `--weight-power 0`
+interleaves them — and on graphs this small the link-prediction metrics do not
+separate the runs, which the DevLog records as a negative result instead of
+claiming a win.

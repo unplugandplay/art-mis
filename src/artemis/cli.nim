@@ -42,6 +42,10 @@ Train options:
   --eval-every N   validate every N epochs        (default 0 = off)
   --ckpt-every N   checkpoint every N epochs      (default 0 = final only)
   --min-count N    drop rarer entities/relations  (default 1)
+  --weight-mode M  sample | step  (weighted graphs; default sample)
+  --weight-power F raise weights to this power    (default 1.0; 0 ignores)
+  --weight-norm N  mean | max  (step mode scaling)(default mean)
+  --no-weights     ignore a weight column entirely
   --threads N      eval worker threads            (default 1; 0 = one per core)
   --delimiter CH   tab | comma | space | other    (default tab)
   --out DIR        output directory               (default .)
@@ -54,6 +58,7 @@ Eval options:
 
 Mermaid options:
   --out FILE       write triples here             (default: stdout)
+  --no-weight-labels  treat numeric/`rel:w` labels as plain relations
   --default-rel R  relation for unlabelled edges  (default relatedTo)
   --group-rel R    relation for subgraph members  (default inGroup)
 
@@ -85,7 +90,8 @@ proc parseDelim(s: string): char =
     else: die("delimiter must be one char or tab|comma|space")
 
 const flagKeys = ["quiet", "bern", "no-bern", "help", "allow-self",
-                  "no-relations", "no-labels"]
+                  "no-relations", "no-labels", "no-weights",
+                  "no-weight-labels"]
 
 proc collectOpts(args: seq[string]): tuple[opts: Table[string, string],
                                            flags: Table[string, bool],
@@ -146,6 +152,8 @@ proc cmdTrain(args: seq[string]) =
   hp.evalEvery = opts.optInt("eval-every", 0)
   hp.ckptEvery = opts.optInt("ckpt-every", 0)
   hp.minCount = opts.optInt("min-count", 1)
+  hp.weightPower = opts.optF32("weight-power", hp.weightPower)
+  hp.useWeights = "no-weights" notin flags
   hp.threads = opts.optThreads()
   hp.quiet = "quiet" in flags
   hp.bernoulli = not ("no-bern" in flags)
@@ -156,6 +164,20 @@ proc cmdTrain(args: seq[string]) =
     else: die("unknown norm: " & opts["norm"])
   if "delimiter" in opts:
     hp.delimiter = parseDelim(opts["delimiter"])
+  if "weight-mode" in opts:
+    case opts["weight-mode"].toLowerAscii
+    of "sample", "sampling": hp.weightMode = wmSample
+    of "step", "lr": hp.weightMode = wmStep
+    else: die("unknown weight mode: " & opts["weight-mode"] &
+              " (expected sample|step)")
+  if "weight-norm" in opts:
+    case opts["weight-norm"].toLowerAscii
+    of "mean", "avg": hp.weightNorm = wnMean
+    of "max": hp.weightNorm = wnMax
+    else: die("unknown weight norm: " & opts["weight-norm"] &
+              " (expected mean|max)")
+  if hp.weightPower < 0:
+    die("--weight-power must be >= 0")
   if "lr-schedule" in opts:
     case opts["lr-schedule"].toLowerAscii
     of "constant", "none", "off": hp.lrSchedule = lsConstant
@@ -180,6 +202,14 @@ proc cmdTrain(args: seq[string]) =
     opts["data"], hp, opts.getOrDefault("valid", ""), opts.getOrDefault("test", ""))
   stderr.writeLine &"loaded: {data.train.len} train / {data.valid.len} valid / {data.test.len} test triples"
   stderr.writeLine &"vocab: {entities.len} entities, {relations.len} relations"
+  if data.weights.len > 0 and hp.useWeights and report.weightedTrain > 0:
+    var total = 0.0'f32
+    for w in data.weights: total += w
+    stderr.writeLine &"weights: {report.weightedTrain}/{data.weights.len} train triples weighted " &
+                     &"(mean {total / data.weights.len.float32:.3f}, mode {$hp.weightMode}, " &
+                     &"power {hp.weightPower}, {$hp.weightNorm}-normalised)"
+  elif data.weights.len > 0 and not hp.useWeights:
+    stderr.writeLine "weights: present but ignored (--no-weights)"
   if hp.lrSchedule != lsConstant:
     var desc = &"lr schedule: {$hp.lrSchedule}  lr={hp.lr}  min={hp.lrMin}"
     if hp.lrSchedule == lsExponential:
@@ -198,7 +228,8 @@ proc cmdTrain(args: seq[string]) =
   let sampler = initSampler(data.train, relations.len, entities.len,
                             hp.bernoulli, truth)
 
-  let res = train(model, data.train, sampler, hp, data.valid, truth, outDir)
+  let res = train(model, data.train, sampler, hp, data.valid, truth, outDir,
+                  data.weights)
   if res.stoppedEarly:
     stderr.writeLine &"early stop after {res.epochsRun} epochs (best epoch {res.bestEpoch}, valid MRR {res.bestMRR:.4f})"
 
@@ -293,8 +324,15 @@ proc cmdNearest(args: seq[string]) =
     inc shown
     if shown >= k: break
 
+proc tripleLine(t: RawTriple): string =
+  ## `head<TAB>relation<TAB>tail`, plus the weight column when it is not 1.0
+  ## (so unweighted output stays exactly as it was before weights existed).
+  result = t.head & "\t" & t.relation & "\t" & t.tail
+  if t.weight != 1.0'f32:
+    result &= "\t" & $t.weight
+
 proc cmdMermaid(args: seq[string]) =
-  let (opts, _, positional) = collectOpts(args)
+  let (opts, flags, positional) = collectOpts(args)
   var path = opts.getOrDefault("in", "")
   if path.len == 0 and positional.len > 0: path = positional[0]
   if path.len == 0:
@@ -302,13 +340,16 @@ proc cmdMermaid(args: seq[string]) =
   if not fileExists(path): die("no such file: " & path)
   let g = parseMermaid(readFile(path),
                        opts.getOrDefault("default-rel", "relatedTo"),
-                       opts.getOrDefault("group-rel", "inGroup"))
+                       opts.getOrDefault("group-rel", "inGroup"),
+                       labelWeights = "no-weight-labels" notin flags)
   for diagram in g.report.unsupported:
     stderr.writeLine "warning: unsupported diagram, skipped: " & diagram
   for line in g.report.skipped:
     stderr.writeLine "warning: could not parse: " & line
-  stderr.writeLine &"mermaid: {g.report.nodes} entities, {g.report.edges} edges, " &
-                   &"{g.report.groups} group links, {g.report.duplicates} duplicates dropped"
+  var summary = &"mermaid: {g.report.nodes} entities, {g.report.edges} edges, " &
+                &"{g.report.groups} group links, {g.report.duplicates} duplicates dropped"
+  if g.report.weighted > 0: summary &= &", {g.report.weighted} weighted"
+  stderr.writeLine summary
   if g.triples.len == 0:
     stderr.writeLine "warning: no triples produced"
   let outPath = opts.getOrDefault("out", "")
@@ -316,11 +357,11 @@ proc cmdMermaid(args: seq[string]) =
     var f = open(outPath, fmWrite)
     defer: f.close()
     for t in g.triples:
-      f.writeLine t.head & "\t" & t.relation & "\t" & t.tail
+      f.writeLine tripleLine(t)
     stderr.writeLine "triples: " & outPath
   else:
     for t in g.triples:
-      echo t.head & "\t" & t.relation & "\t" & t.tail
+      echo tripleLine(t)
 
 proc loadTruthFiles(spec: string, delimiter: char, model: TransEModel): HashSet[Triple] =
   ## `--filter a.tsv,b.tsv`: known-true triples to exclude from predictions.

@@ -106,3 +106,81 @@ suite "train: learning-rate schedule":
       for i in 0 ..< m.dim:
         sq += ep[e * m.dim + i] * ep[e * m.dim + i]
       check abs(sqrt(sq) - 1.0'f32) < 1e-4'f32
+
+suite "train: weighted graphs":
+  proc trainToyWeighted(seed: int64, weights: seq[float32],
+                        mode: WeightMode, power = 1.0'f32): seq[float32] =
+    var hp = HyperParams(dim: 10, epochs: 120, lr: 0.05'f32, norm: nkL1,
+                         quiet: true, seed: seed, weightMode: mode,
+                         weightPower: power)
+    let (data, ents, rels, _) = loadDataset("data/toy_family.tsv", hp)
+    var rng = initRand(seed)
+    var m = initModel(ents, rels, hp, rng)
+    let truth = buildTruthSet(data.train)
+    let sampler = initSampler(data.train, rels.len, ents.len, true, truth)
+    discard train(m, data.train, sampler, hp, weights = weights)
+    rawCopy(m.entityEmb)
+
+  test "step mode with all-ones weights is bit-identical to no weights":
+    var unit = newSeq[float32](16)
+    for i in 0 ..< unit.len: unit[i] = 1.0'f32
+    check trainToyWeighted(42, @[], wmStep) ==
+          trainToyWeighted(42, unit, wmStep)
+    # a degenerate all-zero vector falls back to uniform instead of dividing by
+    # zero (the parser rejects non-positive weights long before this)
+    check trainToyWeighted(42, @[], wmStep) ==
+          trainToyWeighted(42, newSeq[float32](16), wmStep)
+
+  test "weight-power 0 neutralises any weight vector":
+    var weights = newSeq[float32](16)
+    for i in 0 ..< weights.len: weights[i] = (i mod 5).float32 + 0.5'f32
+    check trainToyWeighted(42, @[], wmStep) ==
+          trainToyWeighted(42, weights, wmStep, power = 0.0'f32)
+
+  test "weights actually change the fit":
+    var weights = newSeq[float32](16)
+    for i in 0 ..< weights.len: weights[i] = if i mod 2 == 0: 5.0'f32 else: 0.2'f32
+    check trainToyWeighted(42, @[], wmStep) !=
+          trainToyWeighted(42, weights, wmStep)
+    check trainToyWeighted(42, @[], wmSample) !=
+          trainToyWeighted(42, weights, wmSample)
+
+  test "weighted training is deterministic under a fixed seed":
+    var weights = newSeq[float32](16)
+    for i in 0 ..< weights.len: weights[i] = (i mod 3).float32 + 0.5'f32
+    for mode in [wmStep, wmSample]:
+      check trainToyWeighted(42, weights, mode) ==
+            trainToyWeighted(42, weights, mode)
+
+  proc pairDistances(w1, w2: float32, mode: WeightMode,
+                     epochs: int): (float32, float32) =
+    ## Two *disjoint* triples (no shared entity or relation, so they do not
+    ## compete for the same vectors): the heavier edge should end up tighter.
+    var hp = HyperParams(dim: 8, epochs: epochs, lr: 0.05'f32, seed: 7,
+                         quiet: true, weightMode: mode)
+    let (ents, rels) = (makeVocab(@["a", "b", "c", "d"]),
+                        makeVocab(@["r1", "r2"]))
+    var rng = initRand(7)
+    var m = initModel(ents, rels, hp, rng)
+    let data = @[Triple(head: 0, rel: 0, tail: 1),
+                 Triple(head: 2, rel: 1, tail: 3)]
+    let truth = buildTruthSet(data)
+    let sampler = initSampler(data, rels.len, ents.len, false, truth)
+    discard train(m, data, sampler, hp, weights = @[w1, w2])
+    (distance(m, data[0], nkL1), distance(m, data[1], nkL1))
+
+  test "the heavier edge ends up tighter (step mode)":
+    let (d0Heavy, d1Light) = pairDistances(6.0'f32, 0.2'f32, wmStep, 150)
+    let (d0Light, d1Heavy) = pairDistances(0.2'f32, 6.0'f32, wmStep, 150)
+    check d0Heavy < d1Light # within the first run, the heavy edge is tighter
+    check d1Heavy < d0Light # within the swapped run, likewise
+    check d0Heavy < d0Light # and per edge: heavy beats light
+    check d1Heavy < d1Light
+
+  test "the heavier edge ends up tighter (sample mode)":
+    let (d0Heavy, d1Light) = pairDistances(6.0'f32, 0.2'f32, wmSample, 150)
+    let (d0Light, d1Heavy) = pairDistances(0.2'f32, 6.0'f32, wmSample, 150)
+    check d0Heavy < d1Light
+    check d1Heavy < d0Light
+    check d0Heavy < d0Light
+    check d1Heavy < d1Light

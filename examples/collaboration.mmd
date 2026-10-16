@@ -1,0 +1,45 @@
+%% Artemis demo — a *weighted* collaboration network.
+%%
+%% Edge labels of the form `rel:weight` (or a bare number) carry an edge
+%% weight. Here the weights say how much two people actually work together:
+%% 0.9/0.8 inside a team, 0.1 for a one-off cross-team project.
+%%
+%%   artemis mermaid examples/collaboration.mmd --out out/collab.tsv
+%%   artemis train   --data out/collab.tsv --dim 16 --lr 0.05 --epochs 800 \
+%%                   --lr-schedule linear --lr-min 0.0005 --out out/weighted
+%%   artemis train   --data out/collab.tsv --dim 16 --lr 0.05 --epochs 800 \
+%%                   --lr-schedule linear --lr-min 0.0005 --weight-power 0 \
+%%                   --out out/plain                 # same graph, weights ignored
+flowchart LR
+  ada[Ada]
+  bo[Bo]
+  cy[Cy]
+  di[Di]
+  eve[Eve]
+  fin[Fin]
+  guo[Guo]
+  hana[Hana]
+
+  %% Red team: strong, repeated collaboration
+  ada -->|collaborates:0.9| bo
+  ada -->|collaborates:0.9| cy
+  ada -->|collaborates:0.8| di
+  bo -->|collaborates:0.9| cy
+  bo -->|collaborates:0.8| di
+  cy -->|collaborates:0.8| di
+
+  %% Blue team: same shape, different people
+  eve -->|collaborates:0.9| fin
+  eve -->|collaborates:0.9| guo
+  eve -->|collaborates:0.8| hana
+  fin -->|collaborates:0.9| guo
+  fin -->|collaborates:0.8| hana
+  guo -->|collaborates:0.8| hana
+
+  %% weak, one-off cross-team work
+  ada -->|collaborates:0.1| eve
+  bo -->|collaborates:0.1| fin
+  cy -->|collaborates:0.1| guo
+  di -->|collaborates:0.1| hana
+  ada -->|collaborates:0.1| guo
+  fin -->|collaborates:0.1| cy

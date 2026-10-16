@@ -111,6 +111,41 @@ erDiagram
     check g.report.nodes == 1
     check g.report.skipped.len == 0
 
+  test "numeric and rel:weight labels become edge weights":
+    let g = parseMermaid("""
+graph LR
+  a -->|0.75| b
+  a -->|trusts:0.5| c
+  b -->|plain relation| c
+""")
+    check g.triples.len == 3
+    check g.report.weighted == 2
+    for t in g.triples:
+      case t.tail
+      of "b": check t.weight == 0.75'f32 and t.relation == "relatedTo"
+      of "c":
+        if t.head == "a": check t.weight == 0.5'f32 and t.relation == "trusts"
+        else: check t.weight == 1.0'f32 and t.relation == "plain relation"
+      else: discard
+
+  test "weights can be turned off for label-shaped diagrams":
+    let g = parseMermaid("graph LR\n  a -->|0.75| b\n", labelWeights = false)
+    check g.triples[0].relation == "0.75"
+    check g.triples[0].weight == 1.0'f32
+    check g.report.weighted == 0
+
+  test "repeated edges keep the strongest weight":
+    let g = parseMermaid("graph LR\n  a -->|0.2| b\n  a -->|0.9| b\n")
+    check g.triples.len == 1
+    check g.triples[0].weight == 0.9'f32
+    check g.report.duplicates == 1
+
+  test "subgraph membership carries no weight":
+    let g = parseMermaid("graph LR\n  subgraph g1\n    a -->|3| b\n  end\n")
+    for t in g.triples:
+      if t.relation == "inGroup": check t.weight == 1.0'f32
+      else: check t.weight == 3.0'f32
+
   test "empty input is not an error":
     let g = parseMermaid("")
     check g.triples.len == 0
