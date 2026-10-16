@@ -1,0 +1,20 @@
+# Nim build artifacts
+nimcache/
+nimblecache/
+*.o
+*.obj
+*.exe
+
+# Compiled binaries
+/artemis
+/src/artemis
+
+# Nimble
+nimble.paths
+
+# Data & checkpoints (regenerable)
+/checkpoints/
+*.bin
+
+# OS noise
+.DS_Store
