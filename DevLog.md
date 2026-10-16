@@ -483,3 +483,109 @@ numbers are identical to epoch 600: the margin loss is satisfied, no update
 touches those rows, and the remaining lr decay has nothing left to slow down.
 Practical read: for a graph this small, 100–200 epochs is the point of
 diminishing returns; the demo's 600 simply reaches a fixed point.
+
+---
+
+## Session 8 — how much contrast is in a TransE score? (measured)
+
+Question: the demo answers `(Dave, spouseOf, ?)` with `Erin 12.82485` against
+`Frank 14.16890` — a 1.34 gap on a 12.8 score. Can that be pushed to something
+with more contrast, or is TransE conceptually stuck?
+
+### Why the score looks like that
+
+Exported vectors from the demo model say it plainly: entities are unit L2
+(D2 constrains them), relations are not — mean ‖r‖₂ = 3.55 against ‖e‖₂ = 1.00,
+and in L1 the relation term is ~15 while each entity contributes ~3–4. So
+
+    d(h, r, t) = ‖h + r − t‖₁  ≈  ‖r‖₁  ±  small
+
+every score is ~13, and the winner/runner-up difference is a ripple on a large
+offset. That is not an accident of this graph: the hinge loss
+`max(0, margin + d_pos − d_neg)` can be satisfied by *pushing the corrupted
+triples away* (a big ‖r‖ moves every negative up) instead of pulling the
+positive in, and the paper itself never uses the score as a threshold — TransE
+is evaluated by **rank**. The raw distance was never a confidence scale.
+
+Post-hoc shrinking of `r` does not fix it: scaling the relation vector by
+0.8/0.6/0.4/0.2/0 changes the answer to `Dave` (the query degenerates into
+"nearest entity") and the relative gap peaks only where the answer is already
+wrong. The norm is load-bearing: with unit-norm entities, L1 cannot satisfy the
+margin by direction alone.
+
+### What actually moves the gap (demo, 600 epochs, everything else fixed)
+
+`gap/mean` is scale-free; the odds column is the softmax ratio of the top two
+candidates at τ = 1 (comparable within a row, not across geometries).
+
+| configuration | d(#1) | d(#2) | gap | gap/mean | odds P1/P2 |
+|---|---|---|---|---|---|
+| default (L1, margin 1, neg 1) | 12.83 | 14.17 | 1.34 | 8.7 % | 3.8× |
+| `--norm l2` | 1.91 | 2.18 | 0.27 | 9.6 % | 1.3× |
+| `--margin 5` | 9.80 | 12.48 | 2.68 | **18.7 %** | **14.6×** |
+| `--margin 20` | 13.24 | 14.72 | 1.48 | 9.4 % | 4.4× |
+| `--neg 10` | 12.45 | 14.77 | 2.33 | 15.1 % | 10.2× |
+| `--margin 5 --neg 10` | 10.85 | 13.80 | 2.95 | **19.1 %** | **19.1×** |
+| `--dim 48` | 16.53 | 18.72 | 2.19 | 11.2 % | 8.9× |
+| `--norm l2 --margin 5` | 1.09 | 1.51 | 0.42 | 19.6 % | 1.5× |
+
+Reading: the *default* hparams sit at the worst end of the range; two flags we
+already have (`--margin`, `--neg`) roughly double the relative gap and multiply
+the top-two odds by five. Margin 20 is worse than margin 5 (the model inflates
+‖r‖ further instead of separating), so there is an optimum, not a monotone knob.
+Dimension is not the problem at this scale, and L2 keeps distances in a nicer
+range without improving the ranking contrast.
+
+### Conclusion
+
+TransE is not "blocked" on contrast, but the *raw distance* is the wrong thing to
+stare at: it is a ranking score on an uncalibrated scale, and the model can
+satisfy its objective by inflating relation norms. The literature's levers, in
+increasing order of effort:
+
+1. **Train for separation** — more negatives and a larger margin (measured
+   above), and the principled version, *self-adversarial negative sampling*
+   (RotatE, 2019), which draws negatives ∝ their current score and therefore
+   attacks exactly the near-miss candidates that hurt contrast.
+2. **Stop the hinge from coasting** — BCE/softplus objectives keep pushing after
+   the margin is met, instead of freezing (our demo is literally frozen from
+   epoch ~400 because the loss is 0).
+3. **Constrain the relation space** — TransH's `‖w_r‖ = 1` hyperplanes, TransR/D
+   projections, TransA's adaptive per-relation metric; these make scores
+   comparable across queries rather than dominated by ‖r‖.
+4. **Change the score function** — RotatE/ComplEx/DistMult give a similarity with
+   a much larger dynamic range.
+5. **Calibrate the reporting** — temperature-scale the within-query softmax
+   against validation data (Platt/Guo-style) so the CLI can print
+   `Erin 0.89 · Frank 0.05` instead of two distances 1.3 apart. This adds no
+   model capability but is the honest way to turn a rank into a probability.
+
+### The catch: contrast is not accuracy
+
+`--margin 5` also ran on the full FB15k-237 recipe (`data/fb15k237`, dim 100,
+lr 0.01, 1000 epochs, linear decay to 5e-4 — everything identical except the
+margin). It is *worse* on the rank metrics:
+
+| FB15k-237 | filtered MRR | Hits@10 | raw MRR |
+|---|---|---|---|
+| margin 1 (reference, above) | **0.289** | **0.453** | 0.182 |
+| margin 5 | 0.268 | 0.425 | 0.185 |
+
+So the knob that doubles the demo's score gap costs 0.021 filtered MRR at scale.
+That is the honest headline of this session: **a wider raw-score gap is not a
+better model**, because the score is a ranking device, not a calibrated
+confidence. Buying contrast by pushing every negative further away (margin) also
+pushes the *plausible* candidates around, and the filtered metric — the one that
+removes known-true candidates and therefore measures exactly the near-miss
+distinction we were staring at — notices.
+
+Defaults therefore stay at margin 1 / one negative, and the reference numbers
+above remain comparable with every earlier release.
+
+None of the five levers is implemented yet; the promising ones are not the
+blanket knobs measured above but the *targeted* ones: self-adversarial negatives
+(attack the near-misses specifically), a non-hinge loss (stop freezing once the
+margin is met), and calibrated reporting (turn a rank into an honest
+probability). Each would need its own FB15k check before becoming a default, and
+this session's lesson is that a demo-sized contrast win predicts nothing about
+the rank metrics.

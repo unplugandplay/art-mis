@@ -331,6 +331,24 @@ triple. Reported: Mean Rank, MRR, Hits@1/3/10 — *raw* and *filtered* (candidat
 that form any known-true triple are excluded). Rank `= 1 + #better + 0.5·#ties`
 (average tie handling; ties are rare with float32 scores).
 
+### Scores are ranks, not probabilities
+
+A TransE score is a dissimilarity on an uncalibrated scale, and the model can
+satisfy its margin loss by *inflating relation vectors* rather than by separating
+candidates: entities are unit-norm by constraint (`‖e‖₂ = 1`) while the demo
+model's relations average `‖r‖₂ = 3.55`, so in L1 the `r` term (~15) dominates
+`h − t` (~3 each) and every candidate scores ~13 — the winner/runner-up
+difference is a ripple on that offset. This is why the 2013 paper evaluates by
+**rank**, and why `predict` prints a ranking rather than a confidence.
+
+Contrast can be widened — on the bundled demo `--margin 5 --neg 10` lifts the
+relative gap from 8.7 % to 19.1 % and the top-two odds from 3.8× to 19× — but
+contrast is not accuracy: the same `--margin 5` on FB15k-237 *lowers* filtered
+MRR from 0.289 to 0.268 (Hits@10 0.453 → 0.425). The defaults stay at the paper's
+margin 1 so the reference numbers here remain comparable; `DevLog.md` session 8
+has the full table and the literature options (self-adversarial negatives,
+BCE/softplus losses, TransH/R/D/A relation spaces, temperature calibration).
+
 Implementation: the known-true tails of each `(h, r)` and heads of each `(r, t)`
 are indexed once and flattened into per-triple candidate lists, so the filtered
 rank is `rawRank − #truth candidates that score better` and the rank loop stays

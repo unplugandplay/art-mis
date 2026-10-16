@@ -404,3 +404,29 @@ in the scoring.
 `--allow-self`, and the default stays unconstrained so nothing changes for
 entities-only graphs. It is deliberately the cheap version of a type constraint:
 it uses observed usage, not a declared schema, and it says so in the output.
+
+## D26 — Raw score contrast is not a target; defaults stay at margin 1
+
+**Decision.** Keep `margin = 1.0` and `negPerPos = 1` as the defaults. Record the
+measured contrast behaviour instead of adding a "sharper scores" mode.
+
+**Context.** A demo answer (`Erin 12.82485` vs `Frank 14.16890`) invited the
+question of whether the gap can be widened. It can: `--margin 5 --neg 10` takes
+the demo's relative gap from 8.7 % to 19.1 % and the top-two softmax odds from
+3.8× to 19×. But on FB15k-237 the same margin change costs 0.021 filtered MRR
+(0.289 → 0.268) and 0.028 Hits@10: buying score contrast by pushing all negatives
+further away moves the plausible candidates too, and filtered ranking notices.
+Shrinking the relation vector after training is not a fix either — scaling `r` by
+0.8/0.6/0.4/0.2/0 changes the demo's answer to `Dave`, because with unit-norm
+entities the relation *norm* carries the relation (direction alone cannot satisfy
+an L1 margin).
+
+**Consequence.** No default changes, so every published number stays comparable.
+The session is documented in `DevLog.md` (session 8) and summarised in the README:
+a TransE score is a ranking device, not a confidence, and the honest ways to make
+it legible are (a) report ranks and relative gaps, (b) temperature-calibrate a
+softmax against validation data, (c) target near-misses specifically with
+self-adversarial negative sampling, and (d) use a non-hinge objective so training
+does not freeze once the margin is met. Any of those needs its own FB15k check
+before it can claim to improve the model rather than the appearance of its
+scores.
