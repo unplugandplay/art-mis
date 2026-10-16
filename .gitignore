@@ -1,0 +1,30 @@
+# Nim build artifacts
+nimcache/
+nimblecache/
+*.o
+*.obj
+*.exe
+
+# Compiled binaries (nimble writes the bin to the package root)
+# NOTE: `/src/artemis` used to be listed here too, but that path is the
+# *source directory*: the whole implementation stayed untracked for v0.1.0
+# because of it. The binary is `/artemis`; do not re-add a src/ pattern.
+/artemis
+
+# Nimble
+nimble.paths
+
+# Data & checkpoints (regenerable)
+/checkpoints/
+*.bin
+
+# Datasets (download via scripts/get_data.sh)
+data/fb15k237/
+data/*.zip
+
+# OS noise
+.DS_Store
+
+# Smoke-run artifacts and demo output
+/out_probe/
+/out/
