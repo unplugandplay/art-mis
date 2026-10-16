@@ -17,6 +17,7 @@ Usage:
   artemis eval    --model checkpoint.bin --data test.tsv [--truth train.tsv,valid.tsv]
   artemis export  --model checkpoint.bin [--out dir]
   artemis nearest --model checkpoint.bin --entity NAME [--k 10] [--metric cosine|l2]
+  artemis --version
 
 Train options:
   --dim N          embedding dimension            (default 50)
@@ -268,6 +269,9 @@ proc main*() =
   let args = commandLineParams()
   if args.len == 0 or args[0] in ["-h", "--help", "help"]:
     echo GeneralHelp
+    quit(0)
+  if args[0] in ["-v", "--version", "version"]:
+    echo "artemis " & ArtemisVersion
     quit(0)
   case args[0]
   of "train": cmdTrain(args[1 ..^ 1])

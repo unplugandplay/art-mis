@@ -239,9 +239,11 @@ with `numpy` without errors (script in `scripts/check_export.py`).
   linear decay reaches filtered MRR 0.289 / Hits@10 0.453 in 3m41s, versus
   0.207 / 0.343 for the constant-lr 200-epoch v0.1.0 reference.
 - [ ] Stretch: `--threads:on` HogWild *training* flag (PRD NFR-5) — still
-  skipped in v0.1.0 to protect determinism; single-thread ships as the default.
+  skipped (v0.1.0, v0.2.0) to protect determinism; single-thread ships as the
+  default, with evaluation parallelism covering the practical need (D16).
 - [x] CI-ready test command; README badges optional.
 - [x] Tag `v0.1.0`.
+- [x] Tag `v0.2.0` (parallel evaluation, `--truth`, lr schedules; 39 tests).
 
 ---
 

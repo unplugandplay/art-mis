@@ -92,6 +92,7 @@ artemis eval    --model checkpoint.bin --data test.tsv [--threads N] \
                 [--truth train.tsv,valid.tsv]
 artemis export  --model checkpoint.bin --out dir
 artemis nearest --model checkpoint.bin --entity NAME [--k 10] [--metric cosine|l2]
+artemis --version
 ```
 
 `eval` filters ranks against the file it is evaluating; pass `--truth` with the
@@ -274,11 +275,38 @@ decayed run that still converges, and — for the evaluation rewrite — a
 per-candidate oracle that the indexed/threaded ranks must match on both norms at
 1, 3, 4, 8 and 16 workers.
 
-## Non-goals (v0.1.0)
+## Non-goals
 
 Other KGE models (RotatE, ComplEx, …), GPU, distributed training, hyperparameter
 search, servers. Architecturally, `transEGrad`/`computePair` is the only place
 that would need extending for a new norm-based model.
+
+## Release notes
+
+### v0.2.0
+
+- **Parallel evaluation** — `--threads N` (`0` = one per core): filtered ranks
+  come from a pre-built `(h, r)` / `(r, t)` candidate index and pooled triples
+  are ranked on worker threads. One FB15k-237 validation pass: 65 s → 42 s → 10 s
+  on 8 cores, metrics unchanged. Training stays serial, so seeded runs remain
+  bit-reproducible.
+- **Learning-rate schedules** — `--lr-schedule constant|exp|linear` with
+  `--lr-decay` / `--lr-min`. On FB15k-237, 1000 epochs with linear decay reach
+  filtered MRR **0.289** / Hits@10 **0.453** (v0.1.0: 0.207 / 0.343) in 3m41s.
+- **`eval --truth train.tsv,valid.tsv`** — standalone evaluation can filter
+  against the full train ∪ valid ∪ test truth set (FR-6) instead of the
+  evaluated file alone.
+- **Build fix** — the implementation under `src/artemis/` is tracked again; a
+  `.gitignore` pattern had been hiding the whole source directory, so a fresh
+  clone of v0.1.0 could not build.
+- 39 unit tests (30 at v0.1.0), release build warning-free.
+
+### v0.1.0
+
+Initial release: TransE training (L1/L2, uniform/Bernoulli negative sampling,
+unit-norm constraint), raw + filtered link-prediction metrics, checkpoints and
+TSV/JSON export, the `train`/`eval`/`export`/`nearest` CLI, a bundled toy graph
+and the FB15k-237 reference run.
 
 ## License
 

@@ -1,6 +1,7 @@
 # Artemis — Dev Log
 
-Chronicle of the v0.1.0 build session (2026-10-16, branch `toy`).
+Chronicle of the v0.1.0 build session and the v0.2.0 follow-up work
+(2026-10-16, branch `toy`).
 Requirements: `PRD.md`. Plan: `CODING_PLAN.md`. Rationale for every choice:
 `Decisions.md`.
 
@@ -235,3 +236,28 @@ Caveat recorded for honesty: the two 1000-epoch floors differ by less than the
 run-to-run spread, and validation MRR actually favours 1e-4 (0.2923 vs 0.2891)
 while test favours 5e-4 (0.2890 vs 0.2876). Quoting 5e-4 as the reference is a
 test-set choice of ~0.0014 MRR; read both as "≈0.29 / ≈0.45".
+
+---
+
+## Release 0.2.0
+
+`artemis.nimble` bumped to **0.2.0** and tagged `v0.2.0`. Contents relative to
+v0.1.0, i.e. everything in sessions 2 and 3:
+
+- parallel, index-filtered evaluation too (D16, D17): one FB15k-237 validation
+  pass 65 s → 42 s → 10 s, and the reference run 15 min → 3m41s;
+- `--truth` for protocol-correct standalone evaluation (D18): filtered MRR 0.157
+  → 0.207 on the v0.1.0 checkpoint;
+- learning-rate schedules (D19): FB15k-237 filtered MRR 0.207 → **0.289**,
+  Hits@10 0.343 → **0.453**, i.e. the published tuned-TransE band;
+- `src/artemis/**` tracked again — v0.1.0 clones had no implementation at all;
+- release build warning-free, suite 30 → **39 tests**.
+
+Still out of scope for 0.2.0: HogWild training threads (deliberately skipped,
+D12 — evaluation parallelism covers the practical need), other KGE models,
+GPU/distributed, hyperparameter search.
+
+Release checklist: `nimble build -d:release` ✓ (run as `nim c -d:release` here,
+because this sandbox cannot write `~/.cache/nim`), suite 39/39 green ✓, README
+quickstart re-run on the toy graph ✓, FB15k-237 reference command re-run ✓,
+tag pushed ✓.
