@@ -28,12 +28,19 @@ type
     groups*: int               ## distinct membership triples from subgraphs
     duplicates*: int           ## edges dropped because they were already seen
     weighted*: int             ## edges that carry an explicit weight != 1
+    attributes*: int           ## triples derived from node payload
     unsupported*: seq[string]  ## diagram kinds we do not attempt
     skipped*: seq[string]      ## lines we could not parse
 
   MermaidGraph* = object
     triples*: seq[RawTriple]
     report*: MermaidReport
+
+  NodeInfo* = object
+    ## What a diagram says about one node: its display name and any payload
+    ## lines (`age: 34`, class/ER members, state descriptions).
+    label*: string
+    payload*: seq[(string, string)]
 
   DiagramKind = enum
     dkNone, dkFlow, dkState, dkClass, dkEr, dkUnsupported
@@ -77,6 +84,38 @@ proc stripDecoration(s: string): string =
   while result.len > 0 and result[^1] in fluff:
     result = result[0 .. ^2].strip()
 
+
+proc splitBr(raw: string): seq[string] =
+  ## Split shape text on Mermaid's line breaks (`<br/>` and friends).
+  var s = raw
+  for tag in ["<br/>", "<br />", "<br>", "<BR/>", "<BR />", "<BR>"]:
+    s = s.replace(tag, "\n")
+  s.split('\n')
+
+proc splitPayload(raw: string, extract = true
+                 ): tuple[label: string, payload: seq[(string, string)]] =
+  ## Node text -> (display name, payload).
+  ##
+  ## `Alice Smith<br/>age: 34<br/>role: engineer` names the node `Alice Smith`
+  ## and yields `(age, 34)` / `(role, engineer)`. Every line of the form
+  ## `key: value` becomes payload; the remaining lines are joined into the
+  ## display name (a payload-only node falls back to its id, so it still has
+  ## an entity). Labels that are supposed to *contain* a colon need
+  ## `--no-payload`.
+  var parts: seq[string]
+  for segment in splitBr(raw):
+    let s = stripDecoration(segment)
+    if s.len == 0: continue
+    let colon = if extract: s.find(':') else: -1
+    if colon > 0:
+      let k = s[0 ..< colon].strip()
+      let v = s[colon + 1 .. ^1].strip()
+      if k.len > 0 and v.len > 0:
+        result.payload.add (k, v)
+        continue
+    parts.add s
+  result.label = parts.join(" ")
+
 proc readId(line: string, i: var int): string =
   ## Mermaid node id. A `-` only continues the id when an id character follows,
   ## so `A-->B` splits into id/arrow/id while `node-1` stays one id.
@@ -91,6 +130,13 @@ proc readId(line: string, i: var int): string =
     else:
       break
   if i > start: line[start ..< i] else: ""
+
+proc isIdLike(s: string): bool =
+  ## True when `s` is exactly one Mermaid node id (used to tell `s1 : desc`
+  ## apart from a line that merely contains a colon).
+  if s.len == 0: return false
+  var i = 0
+  readId(s, i) == s
 
 proc readShape(line: string, i: var int): string =
   ## `i` sits on `[`, `(`, `{` or `>`; returns the inner text and advances past
@@ -118,8 +164,9 @@ proc readShape(line: string, i: var int): string =
     inc i
 
 proc parseNode(line: string, i: var int,
-               labels: var Table[string, string]): string =
-  ## Parse `id` or `id<shape>`; register the shape text as the node's label.
+               nodes: var OrderedTable[string, NodeInfo],
+               payload = true): string =
+  ## Parse `id` or `id<shape>`; register the node's display name and payload.
   while i < line.len and line[i] in {' ', '\t'}: inc i
   let id = readId(line, i)
   if id.len == 0: return ""
@@ -127,9 +174,22 @@ proc parseNode(line: string, i: var int,
   if i < line.len and line[i] in {'[', '(', '{', '>'}:
     let save = i
     let raw = readShape(line, i)
-    let label = stripDecoration(raw)
-    if label.len > 0: labels[id] = label
-    else: i = save
+    let (label, items) = splitPayload(raw, extract = payload)
+    if label.len > 0 or items.len > 0:
+      if label.len > 0: nodes.mgetOrPut(id, NodeInfo()).label = label
+      if items.len > 0: nodes.mgetOrPut(id, NodeInfo()).payload.add items
+    else:
+      i = save
+
+proc parsePseudo(line: string, i: var int, isFirst: bool,
+                 prefix: string): string =
+  ## Mermaid's `[*]` entry/exit marker: `Start` when it opens the transition,
+  ## `End` when it closes it, qualified by the composite state it sits in.
+  while i < line.len and line[i] in {' ', '\t'}: inc i
+  if i + 2 < line.len and line[i] == '[' and line[i + 1] == '*' and
+     line[i + 2] == ']':
+    i += 3
+    result = prefix & (if isFirst: "Start" else: "End")
 
 proc readArrow(line: string, i: var int, er: bool): string =
   ## Consume a run of arrow/cardinality characters. In ER mode `|` is part of
@@ -171,17 +231,19 @@ proc splitLabel(label, defaultRel: string,
     result = (defaultRel, w2)
 
 proc scanLine(line: string, kind: DiagramKind,
-              labels: var Table[string, string],
+              nodes: var OrderedTable[string, NodeInfo],
               edges: var seq[(string, string, string, float32)],
               groups: var seq[(string, string)],
               groupStack: seq[string],
-              defaultRel: string, labelWeights: bool): bool =
+              defaultRel: string, labelWeights: bool, payload = true,
+              statePrefix = ""): bool =
   ## Walk one diagram line; true when it made sense (even if it only declared a
   ## node). Partially understood lines may still emit edges before returning.
   let er = kind == dkEr
   var i = 0
   var emitted = 0
-  var prev = parseNode(line, i, labels)
+  var prev = parseNode(line, i, nodes, payload)
+  if prev.len == 0: prev = parsePseudo(line, i, isFirst = true, statePrefix)
   if prev.len == 0: return false
   if groupStack.len > 0: groups.add (prev, groupStack[^1])
   while true:
@@ -214,7 +276,8 @@ proc scanLine(line: string, kind: DiagramKind,
       else:
         i = mark
     while i < line.len and line[i] in {' ', '\t'}: inc i
-    let tail = parseNode(line, i, labels)
+    var tail = parseNode(line, i, nodes, payload)
+    if tail.len == 0: tail = parsePseudo(line, i, isFirst = false, statePrefix)
     if tail.len == 0:
       if opClean.len > 0: return false
       break
@@ -244,7 +307,7 @@ proc scanLine(line: string, kind: DiagramKind,
       while i < line.len and line[i] in {' ', '\t'}: inc i
       if i < line.len and line[i] == '&':
         inc i
-        let other = parseNode(line, i, labels)
+        let other = parseNode(line, i, nodes, payload)
         if other.len == 0:
           i = mark
           break
@@ -261,17 +324,66 @@ proc scanLine(line: string, kind: DiagramKind,
   while i < line.len and line[i] in {' ', '\t'}: inc i
   result = emitted > 0 or i >= line.len
 
+type
+  Member = object
+    ## One line of an ER attribute block or a class body.
+    owner*: string
+    name*: string
+    typ*: string
+    visibility*: string
+    key*: string   ## ER `PK` / `FK`
+    isMethod*: bool
+
+proc parseMember(line: string, er: bool): Member =
+  ## `string name PK` (ER) or `+int age` / `+getAge() int` (class).
+  var s = line.strip()
+  if s.len == 0 or s.startsWith("%%"): return
+  if not er and s[0] in {'+', '-', '#', '~'}:
+    result.visibility =
+      case s[0]
+      of '+': "public"
+      of '-': "private"
+      of '#': "protected"
+      else: "package"
+    s = s[1 .. ^1].strip()
+  let paren = s.find('(')
+  if paren >= 0:
+    result.isMethod = true
+    result.name = s[0 ..< paren].strip()
+    let close = s.find(')', paren)
+    if close >= 0:
+      result.typ = s[close + 1 .. ^1].strip().strip(chars = {':', ' '})
+  else:
+    let parts = s.splitWhitespace()
+    if parts.len >= 2:
+      result.typ = parts[0]
+      result.name = parts[1]
+      if er and parts.len >= 3 and parts[^1].toUpperAscii() in ["PK", "FK", "UK"]:
+        result.key = parts[^1].toUpperAscii()
+      elif er and parts.len == 2 and parts[0].toUpperAscii() in ["PK", "FK"]:
+        # `id PK` (no type)
+        result.name = parts[0]
+        result.typ = ""
+        result.key = parts[1].toUpperAscii()
+    elif parts.len == 1:
+      result.name = parts[0]
+  result.name = result.name.strip(chars = {':', ';', ' '})
+
 proc parseMermaid*(text: string, defaultRel = "relatedTo",
                    groupRel = "inGroup",
-                   labelWeights = true): MermaidGraph =
+                   labelWeights = true,
+                   payload = true): MermaidGraph =
   ## Convert a Mermaid document into triples. Multiple diagrams may be present;
   ## each header resets the diagram kind.
-  var labels = initTable[string, string]()
+  var nodes = initOrderedTable[string, NodeInfo]()
   var edges: seq[(string, string, string, float32)]
   var groups: seq[(string, string)]
   var groupStack: seq[string]
   var kind = dkNone
   var inBlock = false
+  var blockOwner = ""
+  var members: seq[Member]
+  var stateStack: seq[string]
 
   for rawLine in text.splitLines:
     var line = rawLine
@@ -280,7 +392,14 @@ proc parseMermaid*(text: string, defaultRel = "relatedTo",
     line = line.strip()
     if line.len == 0: continue
     if inBlock:
-      if line.startsWith("}"): inBlock = false
+      if line.startsWith("}"):
+        inBlock = false
+      elif payload:
+        let m = parseMember(line, kind == dkEr)
+        if m.name.len > 0:
+          var owned = m
+          owned.owner = blockOwner
+          members.add owned
       continue
     let hk = diagramKind(line)
     if hk != dkNone:
@@ -299,8 +418,8 @@ proc parseMermaid*(text: string, defaultRel = "relatedTo",
       var title = ""
       var id = ""
       if j < line.len and line[j] notin {'[', '(', '{'}:
-        id = parseNode(line, j, labels)
-        title = labels.getOrDefault(id, "")
+        id = parseNode(line, j, nodes, payload)
+        title = nodes.getOrDefault(id, NodeInfo()).label
         if title.len == 0 and id.len > 0:
           # `subgraph eng [Engineering]` — shape after the id
           var k = j
@@ -312,7 +431,7 @@ proc parseMermaid*(text: string, defaultRel = "relatedTo",
       if title.len == 0:
         title = stripDecoration(line[j .. ^1])
       if title.len == 0: title = "group"
-      if id.len > 0: labels[id] = title
+      if id.len > 0: nodes.mgetOrPut(id, NodeInfo()).label = title
       groupStack.add title
       continue
     if isDirective(line) and not ((kind == dkEr or kind == dkClass) and
@@ -321,19 +440,54 @@ proc parseMermaid*(text: string, defaultRel = "relatedTo",
       # entity / class body: register the name, skip the members
       var j = 0
       if line.startsWith("class "): j = "class ".len
-      discard parseNode(line, j, labels)
+      blockOwner = parseNode(line, j, nodes, payload)
       inBlock = true
       continue
     if kind == dkClass and line.startsWith("class ") and not line.endsWith("{"):
       var j = "class ".len
-      discard parseNode(line, j, labels)
+      discard parseNode(line, j, nodes, payload)
       continue
-    if not scanLine(line, kind, labels, edges, groups, groupStack, defaultRel,
-                    labelWeights):
+    if kind == dkState:
+      if line.startsWith("state "):
+        var rest = line["state ".len .. ^1].strip()
+        var composite = false
+        if rest.endsWith("{"):
+          composite = true # composite state: its body is parsed normally
+          rest = rest[0 ..< ^1].strip()
+        var label = ""
+        var id = ""
+        let asPos = rest.find(" as ")
+        if asPos > 0:
+          label = stripDecoration(rest[0 ..< asPos])
+          id = rest[asPos + 4 .. ^1].strip()
+        else:
+          id = rest.strip()
+        if id.len > 0:
+          if label.len > 0: nodes.mgetOrPut(id, NodeInfo()).label = label
+          elif not nodes.hasKey(id): nodes[id] = NodeInfo()
+          if composite: stateStack.add id
+        continue
+      if line == "}":
+        if stateStack.len > 0: discard stateStack.pop()
+        continue
+      if not line.contains(">") and line.find(':') > 0:
+        # `waiting : waiting for input` attaches a description to a state
+        let colon = line.find(':')
+        let id = line[0 ..< colon].strip()
+        let desc = line[colon + 1 .. ^1].strip()
+        if id.len > 0 and desc.len > 0 and isIdLike(id):
+          nodes.mgetOrPut(id, NodeInfo()).payload.add ("description", desc)
+          continue
+    let statePrefix =
+      if kind == dkState and stateStack.len > 0: stateStack[^1] & "."
+      else: ""
+    if not scanLine(line, kind, nodes, edges, groups, groupStack, defaultRel,
+                    labelWeights, payload, statePrefix):
       result.report.skipped.add line
 
   proc nameOf(id: string): string =
-    labels.getOrDefault(id, id)
+    let info = nodes.getOrDefault(id, NodeInfo())
+    if info.label.len > 0: info.label else: id
 
   var unique = initTable[string, int]() # key -> index into result.triples
   var entities = initHashSet[string]()
@@ -364,7 +518,40 @@ proc parseMermaid*(text: string, defaultRel = "relatedTo",
     entities.incl group
     inc result.report.groups
     result.triples.add (head: n, relation: groupRel, tail: group, weight: 1.0'f32)
-  for id in labels.keys:
+  # ER / class members: `(Owner, hasAttribute, Owner.field)` plus type, key and
+  # visibility. The attribute is qualified by its owner so that two entities
+  # can both have a `name` without collapsing into one node.
+  var payloadTriples: seq[(string, string, string)] # head, relation, tail
+  for m in members:
+    let ownerName = nameOf(m.owner)
+    let attrNode = ownerName & "." & m.name
+    payloadTriples.add (ownerName,
+                        (if m.isMethod: "hasMethod" else: "hasAttribute"),
+                        attrNode)
+    if m.typ.len > 0:
+      payloadTriples.add (attrNode, (if m.isMethod: "returns" else: "ofType"),
+                          m.typ)
+    if m.visibility.len > 0:
+      payloadTriples.add (attrNode, "visibility", m.visibility)
+    if m.key.len > 0:
+      payloadTriples.add (attrNode, "key", m.key)
+  # Inline `key: value` payload from node shapes and state descriptions.
+  if payload:
+    for id in nodes.keys:
+      for (k, v) in nodes[id].payload:
+        payloadTriples.add (nameOf(id), k, v)
+  for (h, r, t) in payloadTriples:
+    let key = h & "\t" & r & "\t" & t
+    if unique.hasKey(key):
+      inc result.report.duplicates
+      continue
+    unique[key] = result.triples.len
+    entities.incl h
+    entities.incl t
+    inc result.report.attributes
+    result.triples.add (head: h, relation: r, tail: t, weight: 1.0'f32)
+  for id in nodes.keys:
     entities.incl nameOf(id)
   result.report.nodes = entities.len
-  result.report.edges = result.triples.len - result.report.groups
+  result.report.edges = result.triples.len - result.report.groups -
+                        result.report.attributes

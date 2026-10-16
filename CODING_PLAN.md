@@ -214,6 +214,9 @@ with `numpy` without errors (script in `scripts/check_export.py`).
 - [x] `nearest`: cosine / Euclidean over entity rows, top-k print.
 - [x] v0.3.0 companions: `mermaid` (diagram → triples, D20), `predict`
   (link-prediction queries, D21), `project` (PCA projection + SVG, D22).
+- [x] v0.5.0 node payload: `key: value` shape lines, ER/class members,
+  state descriptions, `Start`/`End` pseudo-states (D24), plus
+  `predict --candidates` relation value sets (D25).
 - [x] v0.4.0 weighted graphs: optional weight column / `rel:weight` labels,
   `--weight-mode sample|step` with `--weight-power` / `--weight-norm`
   (D23); all-ones and power-0 runs are bit-identical to unweighted ones.

@@ -150,3 +150,100 @@ graph LR
     let g = parseMermaid("")
     check g.triples.len == 0
     check g.report.nodes == 0
+
+suite "mermaid: node payload":
+  test "shape text carries key:value payload":
+    let g = parseMermaid("""
+flowchart LR
+  a["Alice Smith<br/>age: 34<br/>role: engineer"] -->|manages| b["Bob<br/>role: engineer"]
+""")
+    check g.has("Alice Smith", "age", "34")
+    check g.has("Alice Smith", "role", "engineer")
+    check g.has("Bob", "role", "engineer")
+    check g.has("Alice Smith", "manages", "Bob")
+    check g.report.attributes == 3
+    check g.report.edges == 1
+
+  test "a payload-only node falls back to its id":
+    let g = parseMermaid("graph LR\n  n1[\"age: 34\"] --> n2[\"Plain Label\"]\n")
+    check g.has("n1", "age", "34")
+    check g.has("n1", "relatedTo", "Plain Label")
+
+  test "payload values are shared entities, so peers meet in the graph":
+    let g = parseMermaid("""
+graph LR
+  a[\"Alice<br/>role: engineer\"] --> b
+  c[\"Carol<br/>role: engineer\"] --> b
+""")
+    var engineers = 0
+    for t in g.triples:
+      if t.relation == "role" and t.tail == "engineer": inc engineers
+    check engineers == 2 # one shared literal node, two owners
+
+  test "multi-line labels that are not payload are joined":
+    let g = parseMermaid("graph LR\n  d[\"Dave<br/>Jones\"] --> e\n")
+    check g.has("Dave Jones", "relatedTo", "e")
+
+  test "--no-payload keeps the text as a label":
+    let g = parseMermaid("graph LR\n  a[\"Alice<br/>age: 34\"] --> b\n",
+                         payload = false)
+    check g.report.attributes == 0
+    check g.has("Alice age: 34", "relatedTo", "b")
+    check not g.has("Alice", "age", "34")
+
+  test "ER attribute blocks become hasAttribute / ofType / key triples":
+    let g = parseMermaid("""
+erDiagram
+  CUSTOMER {
+    string name
+    int id PK
+  }
+  CUSTOMER ||--o{ ORDER : places
+""")
+    check g.has("CUSTOMER", "hasAttribute", "CUSTOMER.name")
+    check g.has("CUSTOMER.name", "ofType", "string")
+    check g.has("CUSTOMER", "hasAttribute", "CUSTOMER.id")
+    check g.has("CUSTOMER.id", "ofType", "int")
+    check g.has("CUSTOMER.id", "key", "PK")
+    check g.has("CUSTOMER", "places", "ORDER")
+    check g.report.attributes == 5
+    check g.report.edges == 1
+    check g.report.skipped.len == 0
+
+  test "class members carry visibility, type, methods and return types":
+    let g = parseMermaid("""
+classDiagram
+  class Animal {
+    +int age
+    -String secret
+    +getName() String
+  }
+""")
+    check g.has("Animal", "hasAttribute", "Animal.age")
+    check g.has("Animal.age", "ofType", "int")
+    check g.has("Animal.age", "visibility", "public")
+    check g.has("Animal.secret", "visibility", "private")
+    check g.has("Animal", "hasMethod", "Animal.getName")
+    check g.has("Animal.getName", "returns", "String")
+    check g.report.skipped.len == 0
+
+  test "state descriptions and composite states":
+    let g = parseMermaid("""
+stateDiagram-v2
+  state "Waiting for input" as waiting
+  waiting : nothing happens yet
+  state Running {
+    [*] --> go
+    go --> stop : halt
+  }
+""")
+    check g.has("Waiting for input", "description", "nothing happens yet")
+    check g.has("go", "halt", "stop")
+    check g.has("Running.Start", "relatedTo", "go")
+    check g.report.skipped.len == 0
+
+  test "payload triples are counted apart from edges":
+    let g = parseMermaid("graph LR\n  a[\"x<br/>k: v\"] --> b\n")
+    check g.report.attributes == 1
+    check g.report.edges == 1
+    check g.triples.len == 2

@@ -372,3 +372,65 @@ either way. Weights are about how hard each edge is pulled — which is what the
 listing above and the test suite demonstrate — not a magic link-prediction
 boost that can be shown on eleven entities. A real evaluation would need a large
 graph with genuine confidence labels.
+
+---
+
+## Session 6 — node payload (v0.5.0)
+
+Question asked: node payload — `states / age / name / description` — can we do
+something about it? The importer was turning node text into a label and *throwing
+the rest away*: `A["Alice<br/>age: 34"]` became the entity `Alice age: 34`, and
+ER/class member blocks were skipped on purpose.
+
+- **Registry** — the node table became `OrderedTable[string, NodeInfo]`
+  (`label` + `payload`), ordered so the emitted triple order stays
+  deterministic. `splitPayload` cuts a shape text on `<br/>`: every
+  `key: value` line is payload, the remaining lines are joined into the display
+  name (`Dave<br/>Jones` still becomes `Dave Jones`), and a payload-only node
+  keeps its id.
+- **Shape payload** — `(node, key, value)` triples. Values are deliberately
+  *shared* entity names, not per-node literals: two people with
+  `role: engineer` point at the same node, which is what lets the model use the
+  attribute.
+- **ER / class members** — the `{ … }` blocks that used to be skipped now parse
+  into `(Owner, hasAttribute, Owner.field)` plus `ofType`, `visibility`, `key`
+  (ER `PK`/`FK`) and, for `+getName() String`, `hasMethod` + `returns`. The
+  attribute node is owner-qualified (`CUSTOMER.name`) so two entities can both
+  have a `name`.
+- **States** — `state "Waiting for input" as waiting` names the state,
+  `waiting : nothing happens yet` attaches a `description`, composite
+  `state Running { … }` bodies are parsed normally (they used to be reported as
+  unparsable), and Mermaid's `[*]` entry/exit markers become `Running.Start` /
+  `Running.End` rather than being dropped.
+- **One ambiguity, resolved by convention and documented**: a line of the form
+  `key: value` is payload, so a *label* that legitimately contains a colon needs
+  `--no-payload` (which keeps the whole text as the label, exactly as before).
+- Suite 83 → **95 tests** (9 payload cases + 3 for candidate restriction).
+
+### Demo: a role that is nowhere in the diagram
+
+`examples/people.mmd` gives seven people a `role`, a `city` and an `age` — and
+leaves Dave's role out. After `mermaid` (8 edges + 20 payload triples) and a
+train, asking for the missing payload:
+
+```
+$ artemis predict --model out/people/artemis_checkpoint.bin --head Dave \
+    --rel role --filter out/people.tsv --candidates out/people.tsv
+top 3 tails for (Dave, role, ?)  [28 known triples filtered]  [candidates: 3 known role values]
+engineer                             14.52927     <- never stated
+designer                             15.11292
+manager                              15.42516
+```
+
+The first run of that query, without `--candidates`, listed `engineer` first and
+then `27` — an age literal — because the candidate pool is every entity. That is
+not a bug in the model but a missing constraint, and it is exactly the one
+payload triples make visible: values belong to a relation. `predict
+--candidates FILE` now restricts the pool to the entities a relation is seen
+with in that file (tail side for `--head`, head side for `--tail`), which is the
+cheap, honest version of a domain/range constraint. Recorded as D25.
+
+Honest note on `nearest` after payload training: `nearest --entity Dave` ranks
+his own `age` literal (`31`) first, because the payload created an entity that is
+connected to him and to almost nothing else. Payload relations are for
+`predict`; `nearest` still describes the edge structure.

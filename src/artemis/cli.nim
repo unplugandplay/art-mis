@@ -59,6 +59,7 @@ Eval options:
 Mermaid options:
   --out FILE       write triples here             (default: stdout)
   --no-weight-labels  treat numeric/`rel:w` labels as plain relations
+  --no-payload     keep node payload as text instead of triples
   --default-rel R  relation for unlabelled edges  (default relatedTo)
   --group-rel R    relation for subgraph members  (default inGroup)
 
@@ -68,6 +69,7 @@ Query options (predict):
   --rel NAME       relation (required)
   --k N            how many candidates to print   (default 10)
   --filter F[,F...] drop candidates already true in these files
+  --candidates F[,F...] only propose values this relation is seen with
   --allow-self     also propose the entity you named (off by default)
 
 Project options:
@@ -91,7 +93,7 @@ proc parseDelim(s: string): char =
 
 const flagKeys = ["quiet", "bern", "no-bern", "help", "allow-self",
                   "no-relations", "no-labels", "no-weights",
-                  "no-weight-labels"]
+                  "no-weight-labels", "no-payload"]
 
 proc collectOpts(args: seq[string]): tuple[opts: Table[string, string],
                                            flags: Table[string, bool],
@@ -341,7 +343,8 @@ proc cmdMermaid(args: seq[string]) =
   let g = parseMermaid(readFile(path),
                        opts.getOrDefault("default-rel", "relatedTo"),
                        opts.getOrDefault("group-rel", "inGroup"),
-                       labelWeights = "no-weight-labels" notin flags)
+                       labelWeights = "no-weight-labels" notin flags,
+                       payload = "no-payload" notin flags)
   for diagram in g.report.unsupported:
     stderr.writeLine "warning: unsupported diagram, skipped: " & diagram
   for line in g.report.skipped:
@@ -349,6 +352,7 @@ proc cmdMermaid(args: seq[string]) =
   var summary = &"mermaid: {g.report.nodes} entities, {g.report.edges} edges, " &
                 &"{g.report.groups} group links, {g.report.duplicates} duplicates dropped"
   if g.report.weighted > 0: summary &= &", {g.report.weighted} weighted"
+  if g.report.attributes > 0: summary &= &", {g.report.attributes} payload triples"
   stderr.writeLine summary
   if g.triples.len == 0:
     stderr.writeLine "warning: no triples produced"
@@ -389,24 +393,38 @@ proc cmdPredict(args: seq[string]) =
   if "filter" in opts:
     truth = loadTruthFiles(opts["filter"], hp.delimiter, model)
   let allowSelf = "allow-self" in flags
+  # `--candidates FILE`: keep a relation's answers to the values it is actually
+  # seen with, so a `role` question cannot answer with an age literal.
+  var restrict = initHashSet[int]()
+  if "candidates" in opts:
+    let tailSide = "tail" notin opts
+    for path in opts["candidates"].split(','):
+      let p = path.strip
+      if p.len == 0: continue
+      var malformed, skipped = 0
+      for t in toTriples(loadRawTriples(p, hp.delimiter, malformed),
+                         model.entities, model.relations, skipped):
+        if t.rel == rel: restrict.incl (if tailSide: t.tail else: t.head)
   var v = view(model)
   v.norm = hp.norm
   if "head" in opts:
     let headName = opts["head"]
     if headName notin model.entities.toId: die("unknown entity: " & headName)
     let preds = predictTails(v, model.entities.toId[headName], rel, k, truth,
-                             allowSelf)
+                             allowSelf, restrict)
     echo &"top {preds.len} tails for ({headName}, {relName}, ?)" &
-         (if truth.len > 0: &"  [{truth.len} known triples filtered]" else: "")
+         (if truth.len > 0: &"  [{truth.len} known triples filtered]" else: "") &
+         (if restrict.len > 0: &"  [candidates: {restrict.len} known {relName} values]" else: "")
     for p in preds:
       echo &"{model.entities.names[p.entity]:<34} {p.score:10.5f}"
   else:
     let tailName = opts["tail"]
     if tailName notin model.entities.toId: die("unknown entity: " & tailName)
     let preds = predictHeads(v, rel, model.entities.toId[tailName], k, truth,
-                             allowSelf)
+                             allowSelf, restrict)
     echo &"top {preds.len} heads for (?, {relName}, {tailName})" &
-         (if truth.len > 0: &"  [{truth.len} known triples filtered]" else: "")
+         (if truth.len > 0: &"  [{truth.len} known triples filtered]" else: "") &
+         (if restrict.len > 0: &"  [candidates: {restrict.len} known {relName} values]" else: "")
     for p in preds:
       echo &"{model.entities.names[p.entity]:<34} {p.score:10.5f}"
 

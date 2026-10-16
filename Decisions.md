@@ -358,3 +358,43 @@ run orders all strong ties ahead of every weak one while `--weight-power 0`
 interleaves them — and on graphs this small the link-prediction metrics do not
 separate the runs, which the DevLog records as a negative result instead of
 claiming a win.
+
+## D24 — Node payload is reified into triples
+
+**Decision.** Whatever a diagram says about a node becomes graph structure:
+`key: value` lines inside a shape (`(node, key, value)`, values shared between
+nodes), ER attribute blocks (`(Owner, hasAttribute, Owner.field)` plus `ofType`
+and `key`), class bodies (adds `visibility`, `hasMethod`, `returns`), and state
+descriptions (`(state, description, …)`), with composite states getting
+`Start`/`End` pseudo-nodes. `--no-payload` restores the old behaviour.
+
+**Context.** The importer kept only the label: `A["Alice<br/>age: 34"]` produced
+the entity `Alice age: 34`, ER/class member blocks were skipped outright, and
+composite state bodies were reported as unparsable. That is the most
+information-dense part of a real diagram — the part a knowledge graph is
+supposed to hold.
+
+**Consequence.** Payload lines are parsed by convention, so a `key: value` label
+needs `--no-payload`; values are shared entities rather than per-node literals
+(so `role: engineer` links people); attributes are owner-qualified
+(`CUSTOMER.name`) so common names do not collapse; payload triples are counted
+separately from edges in the report and in `artemis mermaid`'s summary. Measured
+effect: a role that appears nowhere in `examples/people.mmd` is recovered at rank
+1 by `predict` (DevLog session 6).
+
+## D25 — `predict --candidates` constrains answers to a relation's value set
+
+**Decision.** `predict --candidates FILE[,FILE]` restricts the candidate pool to
+the entities that appear with the queried relation in those files (tail side for
+`--head`, head side for `--tail`). Without the flag, every entity is a candidate.
+
+**Context.** Reifying payload (D24) made literals first-class entities, and the
+first `role` query answered `engineer, 27, …` — the pool mixes people, cities and
+ages. TransE has no domain/range notion, so the fix belongs at query time, not
+in the scoring.
+
+**Consequence.** Attribute completion becomes legible
+(`[candidates: 3 known role values]`), the flag composes with `--filter` and
+`--allow-self`, and the default stays unconstrained so nothing changes for
+entities-only graphs. It is deliberately the cheap version of a type constraint:
+it uses observed usage, not a declared schema, and it says so in the output.

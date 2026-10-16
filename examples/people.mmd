@@ -1,0 +1,29 @@
+%% Artemis demo — node payload becomes graph structure.
+%%
+%% Everything inside a shape that looks like `key: value` is a payload line;
+%% the remaining lines are the node's name. So this diagram says
+%%   Dave city Paris · Dave age 31 · Dave mentors Carol · Alice manages Bob …
+%% and — deliberately — *nothing* about Dave's role.
+%%
+%%   artemis mermaid examples/people.mmd --out out/people.tsv
+%%   artemis train   --data out/people.tsv --dim 24 --lr 0.05 --epochs 800 \
+%%                   --lr-schedule linear --lr-min 0.0005 --out out/people
+%%   artemis predict --model out/people/artemis_checkpoint.bin \
+%%                   --head Dave --rel role --filter out/people.tsv
+flowchart LR
+  alice["Alice<br/>role: engineer<br/>city: Paris<br/>age: 34"]
+  bob["Bob<br/>role: engineer<br/>city: Paris<br/>age: 41"]
+  carol["Carol<br/>role: engineer<br/>city: Paris<br/>age: 29"]
+  dave["Dave<br/>city: Paris<br/>age: 31"]
+  erin["Erin<br/>role: designer<br/>city: Berlin<br/>age: 27"]
+  frank["Frank<br/>role: designer<br/>city: Berlin<br/>age: 38"]
+  grace["Grace<br/>role: manager<br/>city: Berlin<br/>age: 45"]
+
+  alice -->|manages| bob
+  alice -->|manages| carol
+  alice -->|mentors| dave
+  bob -->|mentors| dave
+  dave -->|mentors| carol
+  grace -->|manages| erin
+  grace -->|manages| frank
+  grace -->|mentors| alice

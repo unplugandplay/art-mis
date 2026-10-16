@@ -61,3 +61,28 @@ suite "predict: hand-computed rankings":
 
   test "k larger than the candidate pool is harmless":
     check predictTails(v, head = 0, rel = 0, k = 99, allowSelf = true).len == 3
+
+suite "predict: candidate restriction":
+  let v = view(m)
+
+  test "--candidates keeps a relation to its own value set":
+    # only e2 is "seen" as a tail of r0, so a tail question may only answer e2
+    var restrict = initHashSet[int]()
+    restrict.incl 2
+    let preds = predictTails(v, head = 0, rel = 0, k = 5, restrict = restrict)
+    check preds.len == 1
+    check preds[0].entity == 2
+
+  test "an empty restriction behaves like no restriction":
+    # e1 and e2: the named entity (e0) is excluded by default
+    check predictTails(v, head = 0, rel = 0, k = 5).len == 2
+
+  test "restriction and filtering compose":
+    var restrict = initHashSet[int]()
+    restrict.incl 1
+    restrict.incl 2
+    let truth = [Triple(head: 0, rel: 0, tail: 1)].toHashSet
+    let preds = predictTails(v, head = 0, rel = 0, k = 5, truth = truth,
+                             restrict = restrict)
+    check preds.len == 1
+    check preds[0].entity == 2

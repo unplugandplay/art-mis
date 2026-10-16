@@ -103,6 +103,50 @@ are wiring and labels are entities. Unlabelled edges use `--default-rel`
 (default `relatedTo`). Unsupported diagram kinds and unparsable lines are
 reported on stderr, never guessed at.
 
+## Node payload: states, attributes, descriptions
+
+Everything a diagram says *about* a node becomes triples, not just the edges:
+
+- **Shape text** — `key: value` lines separated by `<br/>`:
+  `alice["Alice<br/>role: engineer<br/>city: Paris"]` yields `Alice role
+  engineer` and `Alice city Paris`; the remaining lines are the entity name (a
+  payload-only node keeps its id). Values are shared entities, so two nodes with
+  `role: engineer` meet in the graph — which is what makes the inference below
+  possible. `--no-payload` keeps the text as a plain label instead.
+- **ER attribute blocks** — `CUSTOMER { string name PK }` becomes
+  `CUSTOMER hasAttribute CUSTOMER.name`, `CUSTOMER.name ofType string` and
+  `CUSTOMER.name key PK`. The attribute node is qualified by its owner, so
+  `CUSTOMER.name` and `ORDER.name` stay distinct.
+- **Class bodies** — `+int age` gives `hasAttribute`, `ofType int` and
+  `visibility public`; `+getName() String` gives `hasMethod` and `returns
+  String`.
+- **State diagrams** — `state "Waiting for input" as waiting` names the state and
+  `waiting : nothing happens yet` attaches `(waiting, description, …)`;
+  composite states keep their own `Running.Start` / `Running.End` markers.
+
+`examples/people.mmd` deliberately leaves one person's role out of the diagram:
+
+```sh
+./artemis mermaid examples/people.mmd --out out/people.tsv   # 8 edges + 20 payload triples
+./artemis train --data out/people.tsv --dim 24 --lr 0.05 --epochs 800 \
+  --lr-schedule linear --lr-min 0.0005 --out out/people
+./artemis predict --model out/people/artemis_checkpoint.bin --head Dave \
+  --rel role --filter out/people.tsv --candidates out/people.tsv
+```
+
+```
+top 3 tails for (Dave, role, ?)  [28 known triples filtered]  [candidates: 3 known role values]
+engineer                             14.52927
+designer                             15.11292
+manager                              15.42516
+```
+
+Dave's role appears nowhere in the diagram; the model infers *engineer* from his
+city, the people who mentor him and the person he mentors. `--candidates` keeps
+the answers to the values a relation is actually seen with — without it the pool
+is *every* entity, literals included, and a `role` question can answer with an
+age.
+
 ## Weighted graphs
 
 Edges can carry a weight: a 4th column in the TSV
@@ -241,6 +285,7 @@ anything else is reported on stderr — a diagram with one odd line still conver
 | `--k N` | 10 | how many candidates to print |
 | `--filter F[,F...]` | — | drop candidates already true in these files |
 | `--allow-self` | off | also propose the entity you already named |
+| `--candidates F[,F...]` | — | only propose values this relation is seen with |
 
 Ranks candidates by `d(h, r, ·)` (with `--head`) or `d(·, r, t)` (with `--tail`),
 best first, using the norm stored in the checkpoint. Distances are the
@@ -422,7 +467,14 @@ Deliberate deviations from the original blueprint — rationale in `Decisions.md
    scales that edge's step (the natural reading of confidence weights), and
    normalisation keeps `--lr` meaning the same thing. All-ones weights are
    exactly the unweighted run, which is tested rather than asserted.
-9. **External formats are parsed, never guessed.** The Mermaid importer is a
+9. **Node payload is data, not decoration.** A diagram's node text is where
+   humans write `role: engineer` and where ER/class blocks declare attributes;
+   Artemis reifies all of it (`hasAttribute`/`ofType`/`visibility`/`key`,
+   `hasMethod`/`returns`, `description`, and shape `key: value` lines) instead of
+   flattening it into a label. Attribute nodes are owner-qualified
+   (`CUSTOMER.name`), payload values are *shared* entities, and `--no-payload`
+   opts out when a label legitimately contains a colon.
+10. **External formats are parsed, never guessed.** The Mermaid importer is a
    line-based scanner over a documented subset: node ids are wiring, shapes are
    entity names, subgraphs become `inGroup` triples, unsupported diagrams and
    unparsable lines are reported on stderr. `project` likewise implements PCA
@@ -432,7 +484,7 @@ Deliberate deviations from the original blueprint — rationale in `Decisions.md
 ## Tests
 
 ```sh
-nimble test        # 83 unit tests
+nimble test        # 95 unit tests
 nimble bench       # synthetic-scale throughput benchmark
 ```
 
@@ -442,7 +494,9 @@ finite-difference gradient check, convergence + determinism on the toy graph,
 a hand-computed evaluation fixture (raw & filtered), bit-exact checkpoint
 round-trips, learning-rate schedule math (endpoints, decay, floor) plus a
 decayed run that still converges, Mermaid parsing (flowchart/state/class/ER,
-labels, subgraphs, dedup, malformed lines), weighted-graph parsing and training
+labels, subgraphs, dedup, malformed lines), node payload (shape `key: value`,
+ER attribute blocks, class members, state descriptions and pseudo-states),
+weighted-graph parsing and training
 (weight vectors, all-ones/power-0 equivalence, heavy edges ending up tighter in
 both modes), hand-computed link-prediction rankings, PCA fixtures with TSV/SVG output checks, and — for the evaluation
 rewrite — a per-candidate oracle that the indexed/threaded ranks must match on
@@ -455,6 +509,20 @@ search, servers. Architecturally, `transEGrad`/`computePair` is the only place
 that would need extending for a new norm-based model.
 
 ## Release notes
+
+### v0.5.0
+
+- **Node payload becomes graph structure**: `key: value` lines in node shapes,
+  ER attribute blocks (`hasAttribute` / `ofType` / `key`), class bodies
+  (`visibility`, `hasMethod`, `returns`) and state descriptions; composite
+  states get their own `Start` / `End` markers. `--no-payload` keeps the old
+  text-only behaviour.
+- **`predict --candidates files`** restricts a relation's answers to the values
+  it is actually seen with, so payload literals cannot pollute unrelated
+  questions.
+- `examples/people.mmd` demonstrates payload-driven inference: a role that is
+  nowhere in the diagram comes back at rank 1.
+- 95 unit tests (83 at v0.4.0).
 
 ### v0.4.0
 
