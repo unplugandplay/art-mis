@@ -22,6 +22,9 @@ Train options:
   --dim N          embedding dimension            (default 50)
   --margin F       margin ranking loss margin     (default 1.0)
   --lr F           SGD learning rate              (default 0.01)
+  --lr-schedule S  constant | exp | linear        (default constant)
+  --lr-decay F     per-epoch factor for exp       (default 1.0 = no decay)
+  --lr-min F       floor (exp) / final lr (linear)(default 0.0)
   --epochs N       max epochs                     (default 1000)
   --batch N        batch size                     (default 100)
   --neg N          negatives per positive         (default 1)
@@ -105,6 +108,8 @@ proc cmdTrain(args: seq[string]) =
   hp.dim = opts.optInt("dim", hp.dim)
   hp.margin = opts.optF32("margin", hp.margin)
   hp.lr = opts.optF32("lr", hp.lr)
+  hp.lrDecay = opts.optF32("lr-decay", hp.lrDecay)
+  hp.lrMin = opts.optF32("lr-min", hp.lrMin)
   hp.epochs = opts.optInt("epochs", hp.epochs)
   hp.batchSize = opts.optInt("batch", hp.batchSize)
   hp.negPerPos = opts.optInt("neg", hp.negPerPos)
@@ -122,9 +127,22 @@ proc cmdTrain(args: seq[string]) =
     else: die("unknown norm: " & opts["norm"])
   if "delimiter" in opts:
     hp.delimiter = parseDelim(opts["delimiter"])
+  if "lr-schedule" in opts:
+    case opts["lr-schedule"].toLowerAscii
+    of "constant", "none", "off": hp.lrSchedule = lsConstant
+    of "exp", "exponential": hp.lrSchedule = lsExponential
+    of "linear", "lin": hp.lrSchedule = lsLinear
+    else: die("unknown lr schedule: " & opts["lr-schedule"] &
+              " (expected constant|exp|linear)")
   if hp.dim <= 0 or hp.margin <= 0 or hp.lr <= 0 or hp.epochs < 1 or
      hp.batchSize < 1 or hp.negPerPos < 1:
     die("invalid hyperparameters (dim/margin/lr/epochs/batch/neg)")
+  if hp.lrDecay <= 0 or hp.lrDecay > 1:
+    die("--lr-decay must be in (0, 1]")
+  if hp.lrMin < 0 or hp.lrMin > hp.lr:
+    die("--lr-min must be in [0, --lr]")
+  if hp.lrSchedule == lsExponential and hp.lrDecay >= 1.0'f32:
+    die("--lr-schedule exp needs --lr-decay < 1 (e.g. 0.99)")
 
   let outDir = opts.getOrDefault("out", ".")
   createDir(outDir)
@@ -133,6 +151,11 @@ proc cmdTrain(args: seq[string]) =
     opts["data"], hp, opts.getOrDefault("valid", ""), opts.getOrDefault("test", ""))
   stderr.writeLine &"loaded: {data.train.len} train / {data.valid.len} valid / {data.test.len} test triples"
   stderr.writeLine &"vocab: {entities.len} entities, {relations.len} relations"
+  if hp.lrSchedule != lsConstant:
+    var desc = &"lr schedule: {$hp.lrSchedule}  lr={hp.lr}  min={hp.lrMin}"
+    if hp.lrSchedule == lsExponential:
+      desc &= &"  decay={hp.lrDecay}"
+    stderr.writeLine desc
   if report.malformedTrain + report.malformedValid + report.malformedTest > 0:
     stderr.writeLine &"warning: skipped {report.malformedTrain + report.malformedValid + report.malformedTest} malformed lines"
   if report.skippedValid + report.skippedTest > 0:

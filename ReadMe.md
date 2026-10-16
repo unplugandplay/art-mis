@@ -68,6 +68,9 @@ filtered metrics use all splits as the known-truth set; standalone `eval` needs
 | `--dim N` | 50 | embedding dimension |
 | `--margin F` | 1.0 | margin-ranking margin |
 | `--lr F` | 0.01 | SGD learning rate |
+| `--lr-schedule S` | constant | `constant`, `exp` (needs `--lr-decay`) or `linear` |
+| `--lr-decay F` | 1.0 | per-epoch factor for `exp`, e.g. 0.99 |
+| `--lr-min F` | 0.0 | floor for `exp`, final lr for `linear` |
 | `--epochs N` | 1000 | max epochs |
 | `--batch N` | 100 | batch size (shuffled each epoch) |
 | `--neg N` | 1 | negatives per positive |
@@ -101,7 +104,8 @@ reference checkpoint that is the difference between filtered MRR 0.157
 ```nim
 import artemis
 
-let hp = HyperParams(dim: 32, epochs: 200)
+let hp = HyperParams(dim: 32, epochs: 200, lr: 0.01'f32,
+                     lrSchedule: lsLinear, lrMin: 0.0005'f32)
 let (data, entities, relations, report) = loadDataset("train.tsv", hp)
 var rng = initRand(42)
 var model = initModel(entities, relations, hp, rng)
@@ -110,7 +114,8 @@ let truth = buildTruthSet(data.train, data.valid, data.test)
 let sampler = initSampler(data.train, relations.len, entities.len, true, truth)
 discard train(model, data.train, sampler, hp, data.valid, truth)
 
-let metrics = evaluate(model, data.test, truth, hp.norm)
+# ranked on `threads` workers; lsLinear decays lr to hp.lrMin over hp.epochs
+let metrics = evaluate(model, data.test, truth, hp.norm, threads = 0)
 saveCheckpoint(model, hp, "ckpt.bin")
 ```
 
@@ -144,51 +149,60 @@ count changes only the order of float64 additions — see `Decisions.md`, D16/D1
 
 Optimistic (evaluated on training triples), but a useful smoke signal: during
 training the 8-entity ranking improves from MRR ≈ 0.29 to ≈ 0.68, and the nearest
-neighbour of `alice` becomes her spouse `david` (cosine 0.943).
+neighbour of `alice` becomes her spouse `david` (cosine 0.943). Adding
+`--lr-schedule linear` to the same command lifts it to raw MRR 0.781 / filtered
+0.875 — the schedule helps at every scale.
 
 ### FB15k-237 (14,505 entities · 237 relations · 272,115 train triples)
 
 ```sh
 scripts/get_data.sh
+
+# reference configuration (3m41s wall with --threads 0 on 8 cores)
 ./artemis train --data data/fb15k237/train.txt --valid data/fb15k237/valid.txt \
-  --test data/fb15k237/test.txt --dim 100 --lr 0.01 --epochs 200 --eval-every 20
+  --test data/fb15k237/test.txt --dim 100 --lr 0.01 --epochs 1000 \
+  --lr-schedule linear --lr-min 0.0005 --eval-every 100 --threads 0
 ```
 
-Reference run (`--dim 100 --lr 0.01 --epochs 200 --bern`, ~15 min wall on a
-laptop, single thread — training 0.15 s/epoch, validation pass ~80 s):
-
 | test (n = 40,876 ranks) | MR | MRR | Hits@1 | Hits@3 | Hits@10 |
 |---|---|---|---|---|---|
-| raw | 648.5 | 0.155 | 0.098 | 0.160 | 0.268 |
-| filtered | 523.4 | **0.207** | 0.140 | 0.221 | **0.343** |
+| raw | 522.2 | 0.182 | 0.115 | 0.191 | 0.321 |
+| filtered | 386.6 | **0.289** | 0.206 | 0.318 | **0.453** |
 
-Validation MRR rose monotonically across all ten evaluations (0.171 → 0.208),
-so early stopping never triggered and the run ended under-trained. Published,
-tuned TransE baselines on FB15k-237 report filtered MRR ≈ 0.29 / Hits@10 ≈
-0.46 with larger budgets (500–1000 epochs, sometimes dim 200); this result
-lands in a sane band for the budget spent, and the gap is attributable to
-training time, not correctness (see `DevLog.md` for the trajectory).
+That matches published, tuned TransE baselines on FB15k-237 (filtered MRR ≈ 0.29
+/ Hits@10 ≈ 0.46), and validation MRR rose monotonically across all ten evals
+(0.196 → 0.289) — the budget, not the model, is still the limit.
 
-The ten validation passes dominate that wall clock; `--threads 0` runs them on
-every core (65 s → 10 s per pass on 8 cores here) and leaves the numbers above
-unchanged to the last printed digit. Re-running the identical command with
-`--threads 0` finished in **2m01s** and reproduced all ten validation MRRs and
-every test metric exactly; evaluating the same checkpoint standalone with
-`--truth train.tsv,valid.tsv` reproduces filtered MRR 0.207 / Hits@10 0.343.
+### Getting there: budget and learning-rate schedule
 
-Training budget is the remaining gap. The same command with `--epochs 500
---eval-every 25` (best-validation weights restored at epoch 475, 4m14s wall
-with `--threads 0`) gives:
+The v0.1.0 reference was 200 epochs at a constant lr 0.01 (filtered MRR 0.207 /
+Hits@10 0.343, ~15 min single-threaded). Everything below is the same data,
+dim 100, margin 1.0, Bernoulli sampling and seed; only budget and schedule move:
 
-| test (n = 40,876 ranks) | MR | MRR | Hits@1 | Hits@3 | Hits@10 |
-|---|---|---|---|---|---|
-| filtered, 200 epochs | 523.4 | 0.207 | 0.140 | 0.221 | 0.343 |
-| filtered, 500 epochs | 463.6 | 0.220 | 0.146 | 0.241 | 0.364 |
+| run | filtered MRR | Hits@10 | wall (`--threads 0`) |
+|---|---|---|---|
+| 200 epochs, constant lr | 0.207 | 0.343 | 2m01s |
+| 500 epochs, constant lr | 0.218 | 0.364 | 2m38s |
+| 500 epochs, exponential 0.99 → 1e-4 | 0.245 | 0.389 | 2m41s |
+| 500 epochs, linear → 5e-4 | 0.264 | 0.421 | 2m40s |
+| 1000 epochs, linear → 1e-4 | 0.288 | 0.451 | 3m44s |
+| 1000 epochs, linear → 5e-4 | **0.289** | **0.453** | 3m41s |
 
-2.5× the budget buys +0.013 MRR / +0.021 Hits@10, and the validation curve
-flattens into ±0.005 noise after ~epoch 300 — so the rest of the distance to
-published ≈0.29 needs an lr schedule or dim 200, not just more epochs at a
-constant lr.
+(The two 1000-epoch floors differ by less than run-to-run spread — validation
+MRR even favours 1e-4 — so read both rows as ≈0.29 / ≈0.45.)
+
+Two lessons, measured rather than assumed. More epochs at a *constant* lr buy
+almost nothing (+0.011 MRR for 2.5× the budget: the run oscillates in ±0.005
+validation noise after ~epoch 300), while decaying the lr to a small floor lets
+the same budget settle (+0.046 MRR over constant at 500 epochs, +0.071 at
+1000). Linear decay beats exponential here (0.264 vs 0.245 at 500 epochs): it
+stays in the productive lr range longer and only anneals at the end.
+
+`--threads 0` is what makes the table cheap: ranking is ~95 % of a run's wall
+clock, so the 1000-epoch reference costs 3m41s instead of ~35 min, with numbers
+identical to the single-threaded path. Evaluating a saved checkpoint standalone
+needs `--truth train.tsv,valid.tsv` for the same filtered basis (see *Other
+commands*).
 
 ### Performance (release build, Apple Silicon)
 
@@ -238,11 +252,15 @@ Deliberate deviations from the original blueprint — rationale in `Decisions.md
    index instead of a hash probe per candidate, and workers share a GC-free raw
    view of the embeddings. Parallelism is spent where it cannot break the
    determinism guarantee.
+7. **Learning-rate schedule is a pure function of the epoch** (`scheduledLr`),
+   constant by default so v0.1.0 runs stay bit-identical, with linear and
+   exponential decay opt-in. On FB15k-237 this single knob is worth more than
+   any reasonable epoch increase at a constant lr (see *Results*).
 
 ## Tests
 
 ```sh
-nimble test        # 35 unit tests
+nimble test        # 39 unit tests
 nimble bench       # synthetic-scale throughput benchmark
 ```
 
@@ -250,8 +268,10 @@ Coverage: TSV parsing, vocab order/min-count, init determinism, unit-norm
 invariants, hand-computed L1/L2 distances, negative-sampling distributions,
 finite-difference gradient check, convergence + determinism on the toy graph,
 a hand-computed evaluation fixture (raw & filtered), bit-exact checkpoint
-round-trips, and — for the evaluation rewrite — a per-candidate oracle that the
-indexed/threaded ranks must match on both norms at 1, 3, 4, 8 and 16 workers.
+round-trips, learning-rate schedule math (endpoints, decay, floor) plus a
+decayed run that still converges, and — for the evaluation rewrite — a
+per-candidate oracle that the indexed/threaded ranks must match on both norms at
+1, 3, 4, 8 and 16 workers.
 
 ## Non-goals (v0.1.0)
 

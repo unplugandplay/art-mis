@@ -1,5 +1,5 @@
 ## Training loop: shuffled epochs, mini-batches, checkpoints, early stopping.
-import std/[random, sets, times, strformat, os]
+import std/[random, sets, times, strformat, os, math]
 import arraymancer
 import ./types
 import ./gradients
@@ -13,6 +13,23 @@ proc rawCopySeq(t: Tensor[float32]): seq[float32] =
   result = newSeq[float32](n)
   if n > 0:
     copyMem(addr result[0], t.storage.raw_buffer, n * sizeof(float32))
+
+proc scheduledLr*(hp: HyperParams, epoch: int): float32 =
+  ## Learning rate for 1-based `epoch`. `lsConstant` returns `hp.lr` for every
+  ## epoch, which keeps v0.1.0 runs bit-identical.
+  let e = max(1, epoch)
+  case hp.lrSchedule
+  of lsConstant:
+    result = hp.lr
+  of lsExponential:
+    result = hp.lr * pow(hp.lrDecay, (e - 1).float32)
+    if result < hp.lrMin: result = hp.lrMin
+  of lsLinear:
+    if hp.epochs <= 1:
+      result = hp.lr
+    else:
+      let frac = (e - 1).float32 / (hp.epochs - 1).float32
+      result = hp.lr + (hp.lrMin - hp.lr) * frac
 
 type
   TrainLogEntry* = object
@@ -48,6 +65,9 @@ proc train*(m: var TransEModel, trainData: seq[Triple], sampler: Sampler,
 
   for epoch in 1 .. hp.epochs:
     rng.shuffle(order)
+    # Effective learning rate for this epoch (constant unless a schedule is on).
+    var ehp = hp
+    ehp.lr = scheduledLr(hp, epoch)
     var epochLoss = 0.0
     for bStart in countup(0, order.len - 1, hp.batchSize):
       let bEnd = min(bStart + hp.batchSize, order.len)
@@ -55,7 +75,7 @@ proc train*(m: var TransEModel, trainData: seq[Triple], sampler: Sampler,
         let pos = order[i]
         for _ in 0 ..< hp.negPerPos:
           let neg = sampler.sample(rng, pos)
-          epochLoss += trainStep(m, pos, neg, hp, scratch)
+          epochLoss += trainStep(m, pos, neg, ehp, scratch)
     let meanLoss = epochLoss / (order.len * hp.negPerPos).float64
 
     var mrr = NaN
@@ -76,10 +96,11 @@ proc train*(m: var TransEModel, trainData: seq[Triple], sampler: Sampler,
     if not hp.quiet:
       let freshMrr = mrr == mrr # not NaN
       let boundary = epoch mod logEvery == 0 or epoch == 1 or epoch == hp.epochs
+      let lrTag = if hp.lrSchedule == lsConstant: "" else: &"  lr={ehp.lr:.5f}"
       if freshMrr:
-        stderr.writeLine &"  epoch {epoch:>5}/{hp.epochs}  loss={meanLoss:.5f}  validMRR={mrr:.4f}  [{epochTime() - t0:.1f}s]"
+        stderr.writeLine &"  epoch {epoch:>5}/{hp.epochs}  loss={meanLoss:.5f}  validMRR={mrr:.4f}{lrTag}  [{epochTime() - t0:.1f}s]"
       elif boundary:
-        stderr.writeLine &"  epoch {epoch:>5}/{hp.epochs}  loss={meanLoss:.5f}  [{epochTime() - t0:.1f}s]"
+        stderr.writeLine &"  epoch {epoch:>5}/{hp.epochs}  loss={meanLoss:.5f}{lrTag}  [{epochTime() - t0:.1f}s]"
 
     if ckptDir.len > 0 and hp.ckptEvery > 0 and epoch mod hp.ckptEvery == 0:
       saveCheckpoint(m, hp, ckptDir / &"ckpt_e{epoch}.bin")

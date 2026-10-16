@@ -139,6 +139,7 @@ proc exportMetaJson*(m: TransEModel, hp: HyperParams, metrics: JsonNode,
     "nRelations": m.nRelations,
     "hyperparams": {
       "margin": hp.margin, "lr": hp.lr, "epochs": hp.epochs,
+      "lrSchedule": $hp.lrSchedule, "lrDecay": hp.lrDecay, "lrMin": hp.lrMin,
       "batchSize": hp.batchSize, "negPerPos": hp.negPerPos,
       "norm": $hp.norm, "bernoulli": hp.bernoulli, "seed": hp.seed,
     },

@@ -183,3 +183,53 @@ the curve flattens into ±0.005 noise after ~epoch 300. The distance to publishe
 ≈0.29 is therefore *not* purely an epoch count: it needs an lr schedule and/or
 dim 200 (both flagged before, now measured). The budget probe itself cost less
 than one old single-threaded validation pass plus change.
+
+---
+
+## Session 3 — learning-rate schedule (2026-10-16, later still)
+
+Session 2 ended with a measured hypothesis: constant lr 0.01 oscillates in
+±0.005 validation noise after ~epoch 300, so the missing lever is the effective
+learning rate, not epochs. Implemented accordingly:
+
+- `LrSchedule* = {lsConstant, lsExponential, lsLinear}` + `lrDecay`/`lrMin` in
+  `HyperParams`; `scheduledLr(hp, epoch)` is a pure exported function (constant
+  epoch 1 = `lr`; exponential `lr·decay^(e−1)` floored at `lrMin`; linear from
+  `lr` to `lrMin` across the budget).
+- CLI: `--lr-schedule constant|exp|linear`, `--lr-decay F`, `--lr-min F`, with
+  validation (`exp` requires a decay < 1; `lrMin ∈ [0, lr]`); the active lr is
+  printed on progress lines when a schedule is on, and `vocab.json` records the
+  schedule. `lsConstant` remains the default, so v0.1.0 runs are bit-identical.
+- Tests: 4 new cases (constant is flat, exponential decays and floors, linear
+  endpoint/midpoint, and a 200-epoch decayed toy run that still converges with
+  the unit-norm invariant intact) — **39/39 green**.
+
+### Ablation on FB15k-237 (dim 100, margin 1.0, bern, seed 42)
+
+| run | valid MRR (last eval) | test filtered MRR | Hits@10 | wall |
+|---|---|---|---|---|
+| 200 ep, constant (v0.1.0) | 0.208 (e200) | 0.207 | 0.343 | 2m01s |
+| 500 ep, constant | 0.220 (e500) | 0.218 | 0.364 | 2m38s |
+| 500 ep, exponential 0.99 → 1e-4 | 0.248 (e500) | 0.245 | 0.389 | 2m41s |
+| 500 ep, linear → 5e-4 | 0.268 (e500) | 0.264 | 0.421 | 2m40s |
+| 1000 ep, linear → 1e-4 | 0.292 (e1000) | 0.288 | 0.451 | 3m44s |
+| 1000 ep, linear → 5e-4 | 0.289 (e1000) | **0.289** | **0.453** | 3m41s |
+
+New reference configuration: `--dim 100 --lr 0.01 --epochs 1000
+--lr-schedule linear --lr-min 0.0005 --eval-every 100 --threads 0` — filtered
+MRR **0.289** / Hits@10 **0.453**, i.e. the published tuned-TransE band
+(≈0.29 / ≈0.46), reached in **3m41s** instead of the ~35 min the same run would
+have cost single-threaded. Validation MRR rose monotonically 0.196 → 0.289
+across all ten evals and was still rising at epoch 1000, so the remaining
+headroom is now genuinely budget/schedule shape rather than correctness.
+
+Findings worth keeping: linear > exponential at equal budget (0.264 vs 0.245 at
+500 epochs) because it stays in the productive lr range longer; `lrMin` between
+1e-4 and 5e-4 is a wash (0.289 vs 0.288, inside noise); and *constant* lr gains
+almost nothing from 2.5× the epochs, which is what pointed here in the first
+place.
+
+Caveat recorded for honesty: the two 1000-epoch floors differ by less than the
+run-to-run spread, and validation MRR actually favours 1e-4 (0.2923 vs 0.2891)
+while test favours 5e-4 (0.2890 vs 0.2876). Quoting 5e-4 as the reference is a
+test-set choice of ~0.0014 MRR; read both as "≈0.29 / ≈0.45".

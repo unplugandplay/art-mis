@@ -234,6 +234,10 @@ with `numpy` without errors (script in `scripts/check_export.py`).
   truth-set candidate index + chunked workers behind `--threads N`
   (0 = one per core, default 1). SGD stays serial, so D7 determinism holds;
   FB15k-237 validation pass 65 s → 42 s (index) → 10 s (8 workers).
+- [x] Learning-rate schedules (`--lr-schedule constant|exp|linear`, `--lr-decay`,
+  `--lr-min`; D19): the measured lever for the FB15k-237 gap — 1000 epochs with
+  linear decay reaches filtered MRR 0.289 / Hits@10 0.453 in 3m41s, versus
+  0.207 / 0.343 for the constant-lr 200-epoch v0.1.0 reference.
 - [ ] Stretch: `--threads:on` HogWild *training* flag (PRD NFR-5) — still
   skipped in v0.1.0 to protect determinism; single-thread ships as the default.
 - [x] CI-ready test command; README badges optional.

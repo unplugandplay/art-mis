@@ -22,6 +22,12 @@ type
   NormKind* = enum
     nkL1, nkL2
 
+  LrSchedule* = enum
+    ## How the SGD learning rate changes across epochs.
+    lsConstant    ## `lr` unchanged (v0.1.0 behaviour)
+    lsExponential ## lr * lrDecay^(epoch-1), floored at lrMin
+    lsLinear      ## lr decays to lrMin over the whole epoch budget
+
   Dataset* = object
     train*, valid*, test*: seq[Triple]
 
@@ -29,6 +35,9 @@ type
     dim*: int = 50
     margin*: float32 = 1.0
     lr*: float32 = 0.01
+    lrSchedule*: LrSchedule = lsConstant ## see `scheduledLr`
+    lrDecay*: float32 = 1.0 ## per-epoch factor for lsExponential
+    lrMin*: float32 = 0.0   ## floor (exp) / final value (linear)
     epochs*: int = 1000
     batchSize*: int = 100
     negPerPos*: int = 1
@@ -49,6 +58,12 @@ type
     entities*, relations*: Vocab
     entityEmb*: Tensor[float32] ## [nEntities, dim]
     relEmb*: Tensor[float32]    ## [nRelations, dim]
+
+proc `$`*(s: LrSchedule): string =
+  case s
+  of lsConstant: "constant"
+  of lsExponential: "exponential"
+  of lsLinear: "linear"
 
 proc hash*(t: Triple): Hash =
   var h: Hash = 0

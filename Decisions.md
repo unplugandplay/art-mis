@@ -249,3 +249,28 @@ it as "filtered".
 alone; the README quickstart and the FB15k-237 section spell out the flag, and
 the reference run's own test metrics are reproduced exactly
 (`--truth train.txt,valid.txt` → filtered MRR 0.2069 / Hits@10 0.3429).
+
+## D19 — Learning-rate schedule: pure function, constant by default, linear wins
+
+**Decision.** `LrSchedule = {lsConstant, lsExponential, lsLinear}` plus
+`lrDecay` and `lrMin` on `HyperParams`; `scheduledLr(hp, epoch)` returns the
+epoch's rate (constant `lr`; `lr·decay^(e−1)` floored at `lrMin`; linear from
+`lr` to `lrMin` across `hp.epochs`). CLI `--lr-schedule constant|exp|linear`,
+`--lr-decay F`, `--lr-min F`. `lsConstant` is the default, so every v0.1.0
+command reproduces bit-identically.
+
+**Context.** The 500-epoch probe (D16 follow-up) showed constant lr 0.01 losing
+to nothing but its own noise after ~epoch 300: 2.5× the epochs bought +0.011
+filtered MRR, while the curve oscillated ±0.005. The effective learning rate —
+not the epoch count — was the lever, and the README's "gap is training budget"
+claim needed to be split into "budget" vs "schedule".
+
+**Consequence.** On FB15k-237 the ablation (same data, dim 100, seed 42) runs
+0.207 (200 ep constant) → 0.218 (500 ep constant) → 0.245 (500 ep exponential
+0.99 → 1e-4) → 0.264 (500 ep linear → 5e-4) → **0.289** filtered MRR / 0.453
+Hits@10 (1000 ep linear → 5e-4), i.e. the published tuned-TransE band, in 3m41s
+with `--threads 0`. Linear beats exponential at equal budget because it stays in
+the productive lr range longer. The schedule is a pure function tested directly
+(`scheduledLr`) and applied per epoch in the loop; the active lr is printed when
+a schedule is on and recorded in `vocab.json`. Checkpoint layout unchanged (the
+schedule is a training-time knob, not model state).
