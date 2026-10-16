@@ -16,5 +16,9 @@ nimble.paths
 /checkpoints/
 *.bin
 
+# Datasets (download via scripts/get_data.sh)
+data/fb15k237/
+data/*.zip
+
 # OS noise
 .DS_Store

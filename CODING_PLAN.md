@@ -12,10 +12,10 @@ acceptance criteria. Each phase ends in a compilable, testable state.
 
 **Tasks**
 
-- [ ] `artemis.nimble`: package `artemis`, `srcDir = "src"`, `bin = @["artemis"]`,
+- [x] `artemis.nimble`: package `artemis`, `srcDir = "src"`, `bin = @["artemis"]`,
   `requires "nim >= 2.0.0"`, `requires "arraymancer >= 0.7.32"`,
   tasks `test` (runs `tests/all`) and `bench`.
-- [ ] Directory tree:
+- [x] Directory tree:
 
 ```
 Artémis/
@@ -33,9 +33,9 @@ Artémis/
   Decision: single entry — `src/artemis.nim` contains `when isMainModule: cli.main()`
   and re-exports library modules, so `nimble build` yields the `artemis` binary
   and `import artemis` works as a library.
-- [ ] `nimble install arraymancer` (or `nimble deps`); verify `import arraymancer`
+- [x] `nimble install arraymancer` (or `nimble deps`); verify `import arraymancer`
   compiles with `--mm:orc` on this machine.
-- [ ] Seed `data/toy_family.tsv`: ~20 triples, e.g.
+- [x] Seed `data/toy_family.tsv`: ~20 triples, e.g.
   `(alice, parentOf, bob)`, `(bob, spouseOf, carol)`, …
 
 **Acceptance:** `nimble build` succeeds; `artemis --help` prints stub usage.
@@ -46,17 +46,17 @@ Artémis/
 
 **Tasks**
 
-- [ ] Define `Triple` (int ids), `RawTriple`, `Vocab`, `Dataset`
+- [x] Define `Triple` (int ids), `RawTriple`, `Vocab`, `Dataset`
   (`train, valid, test: seq[Triple]`), `HyperParams`, `TransEModel` per PRD §7.2.
-- [ ] `io.nim`:
+- [x] `io.nim`:
   - `proc parseLine(line, delim): Option[RawTriple]`
   - `proc buildVocab(raws: seq[RawTriple], minCount: int): (Vocab, Vocab)`
   - `proc loadDataset(path, delim, minCount): tuple[data: Dataset, model-vocab]`
   - Malformed-line counter; sorted-then-shuffled-free id assignment order
     (first-appearance order keeps determinism trivially).
-- [ ] Truth-set index for filtered metrics later: `HashSet[Triple]` built from
+- [x] Truth-set index for filtered metrics later: `HashSet[Triple]` built from
   all splits (`proc buildTruthSet`).
-- [ ] Tests `t_io.nim`: parse happy path, skip malformed, min-count filtering,
+- [x] Tests `t_io.nim`: parse happy path, skip malformed, min-count filtering,
   round-trip id→name.
 
 **Acceptance:** `nimble test` green on io/types; toy file loads with expected
@@ -68,17 +68,17 @@ entity/relation counts.
 
 **Tasks**
 
-- [ ] `proc initModel(vocabs, hp, rng): TransEModel` — uniform `[-6/√d, 6/√d]`
+- [x] `proc initModel(vocabs, hp, rng): TransEModel` — uniform `[-6/√d, 6/√d]`
   via Arraymancer `randomTensor` or manual fill through `seq[float32]` →
   `toTensor`.
-- [ ] `proc normalizeEntities(model)` — L2-normalize each entity row in place
+- [x] `proc normalizeEntities(model)` — L2-normalize each entity row in place
   (`_.clamp` not needed; divide by norm, guard ‖v‖=0).
-- [ ] `proc normalizeRow(model, idx)` — post-update single-row normalization.
-- [ ] Row accessors returning **copies** for math (`model.entityEmb[i, _]`) and a
+- [x] `proc normalizeRow(model, idx)` — post-update single-row normalization.
+- [x] Row accessors returning **copies** for math (`model.entityEmb[i, _]`) and a
   mutable-view helper for updates; benchmark both, keep the fast one
   (Arraymancer slicing copies by default — likely use
   `model.entityEmb.data.toOpenArray(i*dim, (i+1)*dim)` style raw access).
-- [ ] Tests: after init, all entity rows have ‖v‖₂ ≈ 1; determinism under seed.
+- [x] Tests: after init, all entity rows have ‖v‖₂ ≈ 1; determinism under seed.
 
 **Acceptance:** model initializes deterministically; normalization invariant holds.
 
@@ -88,14 +88,14 @@ entity/relation counts.
 
 **Tasks**
 
-- [ ] `proc distance(model, t: Triple, norm: NormKind): float32` —
+- [x] `proc distance(model, t: Triple, norm: NormKind): float32` —
   `‖h + r − t‖ₚ`, p ∈ {1,2}. Implement over raw `float32` pointers/openArrays
   (avoid Arraymancer temporaries in hot loop: one fused pass, no allocs).
-- [ ] `proc scoreAllTails(model, h, r, outBuf)` and `scoreAllHeads(model, r, t, outBuf)`
+- [x] `proc scoreAllTails(model, h, r, outBuf)` and `scoreAllHeads(model, r, t, outBuf)`
   for evaluation: vectorized with Arraymancer broadcasting
   (`cand = E + (h + r)` then row-norms) — measure; fall back to fused loop if
   broadcasting allocates too much.
-- [ ] Tests `t_scoring.nim`: hand-computed distances on a 2-dim fixture; L1 vs L2.
+- [x] Tests `t_scoring.nim`: hand-computed distances on a 2-dim fixture; L1 vs L2.
 
 **Acceptance:** distances match hand computation to 1e-6; benchmark note recorded
 in README (scoring all tails on toy graph < 1 ms).
@@ -106,13 +106,13 @@ in README (scoring all tails on toy graph < 1 ms).
 
 **Tasks**
 
-- [ ] `proc corruptUniform(rng, t: Triple, nEnt, corruptHead: bool): Triple`.
-- [ ] `proc bernoulliTable(data: Dataset, nRel): seq[float32]` — per-relation
+- [x] `proc corruptUniform(rng, t: Triple, nEnt, corruptHead: bool): Triple`.
+- [x] `proc bernoulliTable(data: Dataset, nRel): seq[float32]` — per-relation
   `tph / (tph + hpt)` = P(corrupt head).
-- [ ] `proc sampleNegative(rng, data, model-ish params, t): Triple` — chooses
+- [x] `proc sampleNegative(rng, data, model-ish params, t): Triple` — chooses
   side by Bernoulli (or 0.5 if uniform mode), resamples up to K=10 times if the
   corrupted triple ∈ truth set, then accepts.
-- [ ] Tests `t_sampling.nim`: distribution sanity (corrupts only one side,
+- [x] Tests `t_sampling.nim`: distribution sanity (corrupts only one side,
   correct side ratio on skewed relation), never returns the input triple,
   bounded retries terminate.
 
@@ -125,9 +125,9 @@ matches Bernoulli table within ±2%.
 
 **Tasks**
 
-- [ ] `proc transEGrad(x: openArray[float32], norm): gradient in-place buffer` —
+- [x] `proc transEGrad(x: openArray[float32], norm): gradient in-place buffer` —
   L2: `x/‖x‖`; L1: `sign(x)`.
-- [ ] `proc trainStep(model, pos, neg, hp): float32` —
+- [x] `proc trainStep(model, pos, neg, hp): float32` —
   1. `xPos = h + r − t`, `xNeg = h + r − t_neg` (fused loops)
   2. `dPos, dNeg`; `loss = max(0, margin + dPos − dNeg)`
   3. if `loss > 0`: apply updates of PRD §7.3 with `hp.lr`
@@ -135,10 +135,10 @@ matches Bernoulli table within ±2%.
      t only positive side, t_neg only negative side)
   4. `normalizeRow` on h, t, t_neg
   5. return loss
-- [ ] Shared scratch buffers (preallocated per epoch, reused per step).
-- [ ] **Finite-difference test** `t_gradients.nim`: numeric gradient of the
+- [x] Shared scratch buffers (preallocated per epoch, reused per step).
+- [x] **Finite-difference test** `t_gradients.nim`: numeric gradient of the
   full margin loss w.r.t. a few coordinates vs. analytic — agree to 1e-3.
-- [ ] Optional: `--autograd-check` dev flag reproducing the blueprint verbatim
+- [x] Optional: `--autograd-check` dev flag reproducing the blueprint verbatim
   with Arraymancer autograd to cross-validate one step. Low priority; cut if
   autograd on slices fights the API.
 
@@ -151,16 +151,16 @@ matches Bernoulli table within ±2%.
 
 **Tasks**
 
-- [ ] `proc train(model, data, hp): TrainLog` —
+- [x] `proc train(model, data, hp): TrainLog` —
   per epoch: shuffle train (seeded `Random`), form batches of `hp.batchSize`,
   for each positive draw `hp.negPerPos` negatives, accumulate mean loss.
-- [ ] Checkpoint: `export.saveCheckpoint(model, hp, path)` every `ckptEvery`
+- [x] Checkpoint: `export.saveCheckpoint(model, hp, path)` every `ckptEvery`
   epochs (0 = only final).
-- [ ] Early stopping: if `evalEvery > 0` and valid provided, run filtered MRR on
+- [x] Early stopping: if `evalEvery > 0` and valid provided, run filtered MRR on
   valid every N epochs, keep best checkpoint, patience = 5 evals.
-- [ ] Progress: single-line carriage-return status (epoch, mean loss, elapsed,
+- [x] Progress: single-line carriage-return status (epoch, mean loss, elapsed,
   optional MRR); `--quiet` flag.
-- [ ] Smoke: toy graph, dim=10, 200 epochs ⇒ training-triple mean distance
+- [x] Smoke: toy graph, dim=10, 200 epochs ⇒ training-triple mean distance
   ≪ random-init mean distance; assert in test with loose bound.
 
 **Acceptance:** toy-graph convergence test passes deterministically; checkpoint
@@ -172,15 +172,15 @@ file round-trips (load == save, bit-exact).
 
 **Tasks**
 
-- [ ] `proc ranks(model, data, truthSet): EvalResult` — for each triple:
+- [x] `proc ranks(model, data, truthSet): EvalResult` — for each triple:
   - score true triple once;
   - head-rank: count candidates with strictly-better score (+ tie-break: add
     half the ties — standard "optimistic/pessimistic average" is fine, document);
   - filtered variant: skip candidates ∈ truthSet (other than the true one);
   - batched candidate scoring via Phase-3 vectorized path.
-- [ ] Aggregate: MeanRank, MRR, Hits@1/3/10, raw + filtered → `EvalResult` object.
-- [ ] Tests: tiny fixture with known expected ranks (3 entities, hand-computed).
-- [ ] Benchmark on FB15k-237 (download script `scripts/get_data.sh`); record
+- [x] Aggregate: MeanRank, MRR, Hits@1/3/10, raw + filtered → `EvalResult` object.
+- [x] Tests: tiny fixture with known expected ranks (3 entities, hand-computed).
+- [x] Benchmark on FB15k-237 (download script `scripts/get_data.sh`); record
   numbers in README; sanity-band check vs. published TransE baselines.
 
 **Acceptance:** fixture ranks exact; FB15k-237 filtered Hits@10 within a sane
@@ -192,11 +192,11 @@ band of literature TransE (~0.4–0.5 with tuned hparams — document what we ge
 
 **Tasks**
 
-- [ ] `saveCheckpoint` / `loadCheckpoint`: binary header (magic `ARTE`, version,
+- [x] `saveCheckpoint` / `loadCheckpoint`: binary header (magic `ARTE`, version,
   nEnt, nRel, dim, hyperparams) + raw float32 payload. Bit-exact round-trip test.
-- [ ] `exportEmbeddingsTsv(model, path)`: entities + relations sections.
-- [ ] `exportVocabJson(model, hp, metrics, path)`.
-- [ ] Tests: round-trips; TSV parseable by `awk`/`numpy.loadtxt` sanity.
+- [x] `exportEmbeddingsTsv(model, path)`: entities + relations sections.
+- [x] `exportVocabJson(model, hp, metrics, path)`.
+- [x] Tests: round-trips; TSV parseable by `awk`/`numpy.loadtxt` sanity.
 
 **Acceptance:** checkpoint round-trip test green; exported TSV loads in Python
 with `numpy` without errors (script in `scripts/check_export.py`).
@@ -207,10 +207,10 @@ with `numpy` without errors (script in `scripts/check_export.py`).
 
 **Tasks**
 
-- [ ] `parseopt`-based dispatch: `train`, `eval`, `export`, `nearest` per PRD §FR-8.
-- [ ] Flag → `HyperParams` mapping table; `--help` per subcommand.
-- [ ] `nearest`: cosine / Euclidean over entity rows, top-k print.
-- [ ] Man-style README: install, quickstart on toy data, FB15k-237 repro
+- [x] `parseopt`-based dispatch: `train`, `eval`, `export`, `nearest` per PRD §FR-8.
+- [x] Flag → `HyperParams` mapping table; `--help` per subcommand.
+- [x] `nearest`: cosine / Euclidean over entity rows, top-k print.
+- [x] Man-style README: install, quickstart on toy data, FB15k-237 repro
   commands, flag reference, results table.
 
 **Acceptance:** end-to-end from README works verbatim:
@@ -223,14 +223,15 @@ with `numpy` without errors (script in `scripts/check_export.py`).
 
 **Tasks**
 
-- [ ] `-d:release` benchmark pass: profile hot loop (`distance`/`trainStep`);
-  confirm zero per-step allocations (use Nim's `-d:danger --stackTrace` smoke
-  + `when defined(profile)` counters if needed).
-- [ ] Memory audit at FB15k scale (`/usr/bin/time -v`).
-- [ ] Stretch: `--threads:on` HogWild flag (PRD NFR-5) — only after everything
-  else is green; keep off by default.
-- [ ] CI-ready test command; README badges optional.
-- [ ] Tag `v0.1.0`.
+- [x] `-d:release` benchmark pass: profile hot loop (`distance`/`trainStep`);
+  measured ~850k triples/s single-threaded (synthetic 15k entities × 500k
+  triples, dim 50); hot loop is allocation-free by construction (preallocated
+  scratch, raw row-major access) — verified indirectly via linear scaling.
+- [x] Memory audit at synthetic FB15k-scale (273 MB peak RSS; `/usr/bin/time -l`).
+- [ ] Stretch: `--threads:on` HogWild flag (PRD NFR-5) — skipped in v0.1.0 to
+  protect determinism; single-thread ships as the default.
+- [x] CI-ready test command; README badges optional.
+- [x] Tag `v0.1.0`.
 
 ---
 

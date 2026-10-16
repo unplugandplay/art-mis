@@ -1,0 +1,20 @@
+name: CI
+on:
+  push:
+    branches: [toy, main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jiro4989/setup-nim-action@v2
+        with:
+          nim-version: '2.0.14'
+      - name: Install BLAS (arraymancer)
+        run: sudo apt-get update && sudo apt-get install -y libopenblas-dev liblapacke-dev
+      - name: Build
+        run: nimble build -y
+      - name: Test
+        run: nimble test -y
