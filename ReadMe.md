@@ -59,20 +59,25 @@ repeated as edges.
 ./artemis train --data out/company.tsv --dim 24 --lr 0.05 --epochs 600 \
   --lr-schedule linear --lr-min 0.001 --out out
 
-# 3. ask for a fact the diagram states
-./artemis predict --model out/artemis_checkpoint.bin --head Dave --rel spouseOf --k 3
+# 3. calibrate the scores on held-out triples, so they read as probabilities
+./artemis calibrate --model out/artemis_checkpoint.bin --data out/company.tsv \
+  --out out/company_calibrated.bin
 
-# 4. see the embedding space: out/map.svg + out/projection.tsv
+# 4. ask for a fact the diagram states
+./artemis predict --model out/company_calibrated.bin --head Dave --rel spouseOf \
+  --k 3 --probabilities
+
+# 5. see the embedding space: out/map.svg + out/projection.tsv
 ./artemis project --model out/artemis_checkpoint.bin --out out
 ```
 
-Real output from step 3 (`Erin` is Dave's spouse in the diagram):
+Real output from step 4 (`Erin` is Dave's spouse in the diagram):
 
 ```
-top 3 tails for (Dave, spouseOf, ?)
-Erin                                 12.82485
-Frank                                14.16890
-Sales                                14.80359
+top 3 tails for (Dave, spouseOf, ?)  [calibrated, tau=0.3133]
+Erin                                 12.82485   p=0.9832
+Frank                                14.16890   p=0.0135
+Sales                                14.80359   p=0.0018
 ```
 
 The interesting part is step 3 with a *hidden* fact: delete one edge, retrain,
@@ -93,8 +98,9 @@ Frank                                11.46970
 Erin                                 11.80741
 ```
 
-`docs/company-map.svg` is what step 4 produces for the bundled example (the
-same command regenerates it byte for byte):
+The distances say "1.34 apart on a 12.8 scale"; the calibrated probabilities say
+**98 % against 1.4 %**. `docs/company-map.svg` is what step 5 produces for the
+bundled example (the same command regenerates it byte for byte):
 
 ![PCA projection of the company embeddings](docs/company-map.svg)
 
@@ -130,15 +136,17 @@ Everything a diagram says *about* a node becomes triples, not just the edges:
 ./artemis mermaid examples/people.mmd --out out/people.tsv   # 8 edges + 20 payload triples
 ./artemis train --data out/people.tsv --dim 24 --lr 0.05 --epochs 800 \
   --lr-schedule linear --lr-min 0.0005 --out out/people
-./artemis predict --model out/people/artemis_checkpoint.bin --head Dave \
-  --rel role --filter out/people.tsv --candidates out/people.tsv
+./artemis calibrate --model out/people/artemis_checkpoint.bin --data out/people.tsv \
+  --out out/people_calibrated.bin
+./artemis predict --model out/people_calibrated.bin --head Dave \
+  --rel role --filter out/people.tsv --candidates out/people.tsv --probabilities
 ```
 
 ```
-top 3 tails for (Dave, role, ?)  [28 known triples filtered]  [candidates: 3 known role values]
-engineer                             14.52927
-designer                             15.11292
-manager                              15.42516
+top 3 tails for (Dave, role, ?)  [28 known triples filtered]  [candidates: 3 known role values]  [calibrated, tau=0.2037]
+engineer                             13.69480   p=0.9878
+designer                             14.59262   p=0.0120
+manager                              15.50667   p=0.0001
 ```
 
 Dave's role appears nowhere in the diagram; the model infers *engineer* from his
@@ -179,7 +187,8 @@ a team and weak (0.1) across:
   --head Ada --rel collaborates --k 7
 ```
 
-Real output — the weighted model puts every strong tie ahead of every weak one:
+Real output — the weighted model puts every strong tie ahead of every weak one
+(τ fitted on this graph is 1.0; calibration is per model, not per project):
 
 ```
 Cy   11.96961   (0.9)      Cy   12.05626   (0.9)
@@ -189,6 +198,10 @@ Guo  13.47154   (0.1)      Bo   12.22988   (0.9)
 Hana 13.63556   (0.1)      Eve  12.25033   (0.1)
                              (left: weighted, right: --weight-power 0)
 ```
+
+With `--probabilities` the same ranking reads `Cy p=0.37 · Di p=0.20 · Bo p=0.19 ·
+Guo p=0.08 · Hana p=0.07` — the strong ties hold three quarters of the mass
+between them.
 
 Honest caveat: on a graph this small the *link-prediction* metrics do not
 separate the two runs — there are too few held-out triples for a meaningful
@@ -371,8 +384,12 @@ Sales                                14.80359   p=0.0018
 ```
 
 Same model, same ordering — 98 % against 1.4 % instead of two distances 1.3
-apart. The fitted τ is *below* 1 (0.31 here, 0.48 on FB15k-237) precisely because
-the raw scale is inflated: the correction sharpens. On FB15k-237, calibrated on
+apart. τ is per model and comes out wherever the data says: 0.31 here, 0.20 for
+the payload example, 1.00 for the weighted collaboration graph, 0.48 on
+FB15k-237 — often *below* 1, because the raw scale is inflated and the correction
+is to sharpen, but not always. The three toy demos below calibrate on the graph
+they trained on (there is no held-out split at 20 triples); the FB15k-237 number
+is the honest, properly held-out one. On FB15k-237, calibrated on
 the held-out valid split, the NLL of the true tail drops 6.18 → 4.90 nats and the
 true tail averages 8.9 % probability — which is what a filtered MRR of 0.29 looks
 like over 14,505 candidates.

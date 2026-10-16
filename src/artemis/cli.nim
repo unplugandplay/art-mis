@@ -425,6 +425,9 @@ proc cmdPredict(args: seq[string]) =
           "or pass --temperature F")
   elif "temperature" in opts:
     temperature = opts.optF32("temperature", 0.0'f32)
+  elif model.temperature > 0.0'f32:
+    stderr.writeLine &"hint: this model is calibrated (tau={model.temperature:.4g}); " &
+                     "add --probabilities to print p-values"
   # `--candidates FILE`: keep a relation's answers to the values it is actually
   # seen with, so a `role` question cannot answer with an age literal.
   var restrict = initHashSet[int]()
