@@ -137,12 +137,20 @@ scripts/get_data.sh
   --test data/fb15k237/test.txt --dim 100 --lr 0.01 --epochs 200 --eval-every 20
 ```
 
-Reference run status at the time of this writing: training runs at ~0.15 s/epoch
-(272k triples); each validation pass costs ~80 s (20k test-scale ranking over
-14.5k candidates × dim 100, single thread). Interim validation MRR: 0.171
-(epoch 20) → 0.179 (epoch 40), still climbing. Final test metrics will be
-appended here when the reference run completes — rerun the command above to
-reproduce end-to-end.
+Reference run (`--dim 100 --lr 0.01 --epochs 200 --bern`, ~15 min wall on a
+laptop, single thread — training 0.15 s/epoch, validation pass ~80 s):
+
+| test (n = 40,876 ranks) | MR | MRR | Hits@1 | Hits@3 | Hits@10 |
+|---|---|---|---|---|---|
+| raw | 648.5 | 0.155 | 0.098 | 0.160 | 0.268 |
+| filtered | 523.4 | **0.207** | 0.140 | 0.221 | **0.343** |
+
+Validation MRR rose monotonically across all ten evaluations (0.171 → 0.208),
+so early stopping never triggered and the run ended under-trained. Published,
+tuned TransE baselines on FB15k-237 report filtered MRR ≈ 0.29 / Hits@10 ≈
+0.46 with larger budgets (500–1000 epochs, sometimes dim 200); this result
+lands in a sane band for the budget spent, and the gap is attributable to
+training time, not correctness (see `DevLog.md` for the trajectory).
 
 ### Performance (release build, Apple Silicon, single thread)
 

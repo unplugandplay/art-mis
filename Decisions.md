@@ -190,3 +190,44 @@ through a type, but its procs are not.
 
 **Consequence.** Slightly noisier imports; zero ambiguity about where procs
 come from.
+
+## D16 — Evaluation runs on worker threads; training stays single-threaded
+
+**Decision.** `evaluate` takes `threads` (CLI `--threads N`, `0` = one per core,
+default **1**). It splits the pooled triples into that many contiguous chunks;
+each worker owns a `ScoreBoard` (score + hoisted-term scratch) and accumulates
+its own `EvalResult`, and the chunk partials are summed in chunk order. Workers
+share only a GC-free `EmbeddingView` (raw `ptr UncheckedArray[float32]` + dims),
+never a `Tensor` or a `Table`.
+
+**Context.** On FB15k-237 (14,505 entities, dim 100) one validation pass cost
+**65 s** against **0.15 s/epoch** of training: ~95 % of a reference run's wall
+clock was ranking, and the SGD loop is inherently serial. Nim 2.x enables
+threads by default, so no build flag is required.
+
+**Consequence.** 8 workers cut the pass to ~10 s (≈6.5×) with metrics equal to
+~1e-12; the default stays 1 so the documented reference command remains
+bit-reproducible, and D7 is untouched because the training path never leaves one
+thread. Re-ranks are reproducible for a fixed thread count — only the order of
+float64 additions changes, never the per-triple ranks. HogWild *training*
+remains skipped (D12); this is NFR-5 applied where it cannot hurt determinism.
+
+## D17 — Filtered ranks come from a precomputed candidate index
+
+**Decision.** Known-true tails of each `(h, r)` and heads of each `(r, t)` are
+indexed once, flattened into per-evaluation-triple candidate lists (CSR), and a
+filtered rank is computed as `rawRank − #{truth candidates that score better}`
+(a tie subtracts 0.5).
+
+**Context.** The straightforward protocol probes a `HashSet[Triple]` for every
+candidate — ≈5·10⁸ hashes per FB15k-237 validation pass — and drags hashing into
+the middle of the scoring loop.
+
+**Consequence.** Bit-identical metrics, because both counts are exact multiples
+of 0.5 in float64; the rank loop is now pure arithmetic. `tests/t_evaluate.nim`
+keeps the original per-candidate algorithm as an oracle and checks the new path
+against it for L1 and L2, at 1, 3, 4, 8 and 16 threads. The tail-side `h + r` is
+hoisted out of the candidate loop (identical rounding order — one addition less
+per candidate element); the head side is deliberately left as `(e + r) − t`,
+since hoisting `r − t` would associate the sum differently and change the last
+bits.
