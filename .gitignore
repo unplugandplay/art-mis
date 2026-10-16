@@ -5,9 +5,11 @@ nimblecache/
 *.obj
 *.exe
 
-# Compiled binaries
+# Compiled binaries (nimble writes the bin to the package root)
+# NOTE: `/src/artemis` used to be listed here too, but that path is the
+# *source directory*: the whole implementation stayed untracked for v0.1.0
+# because of it. The binary is `/artemis`; do not re-add a src/ pattern.
 /artemis
-/src/artemis
 
 # Nimble
 nimble.paths

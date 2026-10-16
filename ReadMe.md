@@ -76,6 +76,7 @@ filtered metrics use all splits as the known-truth set.
 | `--eval-every N` | 0 | validation MRR + early stopping every N epochs |
 | `--ckpt-every N` | 0 | write `out/ckpt_eN.bin` every N epochs |
 | `--min-count N` | 1 | drop entities/relations seen fewer than N times |
+| `--threads N` | 1 | evaluation workers (0 = one per core; training stays serial) |
 | `--valid` / `--test` | — | extra splits (truth set + metrics) |
 | `--out DIR` | . | checkpoints, `embeddings.tsv`, `vocab.json` |
 | `--quiet` | off | suppress progress lines |
@@ -83,7 +84,7 @@ filtered metrics use all splits as the known-truth set.
 ### Other commands
 
 ```sh
-artemis eval    --model checkpoint.bin --data test.tsv
+artemis eval    --model checkpoint.bin --data test.tsv [--threads N]
 artemis export  --model checkpoint.bin --out dir
 artemis nearest --model checkpoint.bin --entity NAME [--k 10] [--metric cosine|l2]
 ```
@@ -113,6 +114,15 @@ fixed), then the true tail against all entities (head fixed): two ranks per
 triple. Reported: Mean Rank, MRR, Hits@1/3/10 — *raw* and *filtered* (candidates
 that form any known-true triple are excluded). Rank `= 1 + #better + 0.5·#ties`
 (average tie handling; ties are rare with float32 scores).
+
+Implementation: the known-true tails of each `(h, r)` and heads of each `(r, t)`
+are indexed once and flattened into per-triple candidate lists, so the filtered
+rank is `rawRank − #truth candidates that score better` and the rank loop stays
+pure arithmetic (no hash probe per candidate). The pooled triples are then
+evaluated in contiguous chunks on `--threads N` workers (default 1; `0` = one per
+core). Training itself is always single-threaded, so a seed still reproduces
+byte-identical embeddings; a fixed thread count reproduces the metrics (thread
+count changes only the order of float64 additions — see `Decisions.md`, D16/D17).
 
 ## Results
 
@@ -152,10 +162,14 @@ tuned TransE baselines on FB15k-237 report filtered MRR ≈ 0.29 / Hits@10 ≈
 lands in a sane band for the budget spent, and the gap is attributable to
 training time, not correctness (see `DevLog.md` for the trajectory).
 
-### Performance (release build, Apple Silicon, single thread)
+The ten validation passes dominate that wall clock; `--threads 0` runs them on
+every core (65 s → 10 s per pass on 8 cores here) and leaves the numbers above
+unchanged to the last printed digit, cutting the whole run to under 3 minutes.
+
+### Performance (release build, Apple Silicon)
 
 Synthetic scale — 15,000 entities × 200 relations × 500,000 random triples,
-dim 50 (`nimble bench`):
+dim 50 (`nimble bench`), single thread:
 
 | Metric | Value |
 |---|---|
@@ -165,6 +179,16 @@ dim 50 (`nimble bench`):
 
 The per-triple hot loop performs no allocations (preallocated scratch buffers,
 raw row-major access), so epoch time scales linearly with triples × dim.
+
+Link-prediction evaluation — FB15k-237 valid (17,526 triples ranked against
+14,505 entities, dim 100, L1), one full raw + filtered pass:
+
+| Workers | Wall | Notes |
+|---|---|---|
+| 1 | 42.3 s | pre-index implementation was 65 s on the same machine |
+| 2 | 21.6 s | |
+| 4 | 13.2 s | measured with one core busy training, so 8 is conservative |
+| 8 | 10.1 s | metrics identical at every thread count |
 
 ## Design notes
 
@@ -185,19 +209,25 @@ Deliberate deviations from the original blueprint — rationale in `Decisions.md
    in sequence; the test suite checks both sides numerically.
 5. `export.nim` → `persist.nim`: `export` is a Nim keyword and cannot appear in
    an `export` list.
+6. **Evaluation is indexed and chunk-parallel** (`--threads`), while SGD stays
+   serial: filtered ranks come from a pre-built `(h, r)` / `(r, t)` candidate
+   index instead of a hash probe per candidate, and workers share a GC-free raw
+   view of the embeddings. Parallelism is spent where it cannot break the
+   determinism guarantee.
 
 ## Tests
 
 ```sh
-nimble test        # 28 unit tests
+nimble test        # 35 unit tests
 nimble bench       # synthetic-scale throughput benchmark
 ```
 
 Coverage: TSV parsing, vocab order/min-count, init determinism, unit-norm
 invariants, hand-computed L1/L2 distances, negative-sampling distributions,
 finite-difference gradient check, convergence + determinism on the toy graph,
-a hand-computed evaluation fixture (raw & filtered), and bit-exact checkpoint
-round-trips.
+a hand-computed evaluation fixture (raw & filtered), bit-exact checkpoint
+round-trips, and — for the evaluation rewrite — a per-candidate oracle that the
+indexed/threaded ranks must match on both norms at 1, 3, 4, 8 and 16 workers.
 
 ## Non-goals (v0.1.0)
 

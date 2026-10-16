@@ -228,8 +228,12 @@ with `numpy` without errors (script in `scripts/check_export.py`).
   triples, dim 50); hot loop is allocation-free by construction (preallocated
   scratch, raw row-major access) — verified indirectly via linear scaling.
 - [x] Memory audit at synthetic FB15k-scale (273 MB peak RSS; `/usr/bin/time -l`).
-- [ ] Stretch: `--threads:on` HogWild flag (PRD NFR-5) — skipped in v0.1.0 to
-  protect determinism; single-thread ships as the default.
+- [x] Stretch: parallel **evaluation** (PRD NFR-5 applied where it is safe):
+  truth-set candidate index + chunked workers behind `--threads N`
+  (0 = one per core, default 1). SGD stays serial, so D7 determinism holds;
+  FB15k-237 validation pass 65 s → 42 s (index) → 10 s (8 workers).
+- [ ] Stretch: `--threads:on` HogWild *training* flag (PRD NFR-5) — still
+  skipped in v0.1.0 to protect determinism; single-thread ships as the default.
 - [x] CI-ready test command; README badges optional.
 - [x] Tag `v0.1.0`.
 

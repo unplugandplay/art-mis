@@ -118,3 +118,36 @@ Tests: **28/28 green**. FB15k-237 reference run complete: filtered MRR 0.207 /
 Hits@10 0.343 (validation MRR still rising at epoch 200 — more budget is the
 known headroom). Next session: longer reference run (500–1000 epochs, lr
 schedule), optional: `--threads` stretch, more KGE norms.
+
+---
+
+## Session 2 — evaluation speed-up (2026-10-16, later)
+
+Profiled before optimising: on FB15k-237 one validation pass cost **65 s**
+against **0.15 s/epoch** of training — ~95 % of a reference run's wall clock was
+ranking, all of it single-threaded and re-hashing the truth set per candidate.
+Two layered changes:
+
+1. **Filtered ranks without hashing.** The old loop probed a `HashSet[Triple]`
+   for every candidate (≈5·10⁸ probes per FB15k-237 pass). The truth set is now
+   indexed once by `(h, r)` and `(r, t)` and flattened into per-triple candidate
+   lists, so `fRank = rawRank − #truth candidates that score better` — exact,
+   because both counts are multiples of 0.5. The tail side additionally hoists
+   `h + r` out of the candidate loop (identical rounding order); the head side
+   deliberately does not (`(e + r) − t` must keep its association). 65 s → 42 s.
+2. **Chunked workers.** `evaluate` takes `threads`, splits the pooled triples
+   into contiguous chunks and gives each worker its own `ScoreBoard`; workers
+   share only a GC-free `EmbeddingView` (raw `ptr UncheckedArray[float32]`), never
+   a `Tensor` or `Table`. New `--threads N` flag on `train` and `eval`
+   (0 = one per core, default 1). 42 s → **10 s** at 8 workers, metrics equal to
+   the last printed digit; SGD is untouched, so D7 still holds.
+
+Verification: `tests/t_evaluate.nim` keeps the pre-index algorithm as an oracle
+and checks the indexed/threaded path against it for L1 and L2 at 1, 3, 4, 8 and
+16 workers. The suite is **35/35 green** (30 before this session; the "28" of
+the v0.1.0 close-out was a miscount). Housekeeping in the same pass: deprecated
+`toRawSeq` replaced by a local `rawCopySeq`, unused imports dropped (release
+build is warning-free again), and **`.gitignore` repaired** — `/src/artemis` had
+been ignoring the *source directory*, so no implementation file was ever
+committed in v0.1.0 and a fresh clone could not build; `src/artemis/*.nim` is
+now tracked.
