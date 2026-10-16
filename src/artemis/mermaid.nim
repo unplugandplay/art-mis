@@ -18,6 +18,7 @@
 ## skipped, so one odd edge never sinks a diagram.
 import std/[strutils, tables, sets]
 import ./types
+import ./io
 
 type
   MermaidReport* = object
@@ -26,6 +27,7 @@ type
     edges*: int                ## distinct relation triples from edges
     groups*: int               ## distinct membership triples from subgraphs
     duplicates*: int           ## edges dropped because they were already seen
+    weighted*: int             ## edges that carry an explicit weight != 1
     unsupported*: seq[string]  ## diagram kinds we do not attempt
     skipped*: seq[string]      ## lines we could not parse
 
@@ -151,12 +153,29 @@ proc readWord(line: string, i: var int): string =
   while i < line.len and line[i] notin {' ', '\t', '|'}: inc i
   if i > start: line[start ..< i] else: ""
 
+proc splitLabel(label, defaultRel: string,
+                enabled: bool): tuple[rel: string, weight: float32] =
+  ## Edge labels may carry a weight: `trusts:0.75` is relation+weight, a bare
+  ## `0.75` is a weight for the default relation, anything else is just a
+  ## relation name. `enabled` is the `--no-weight-labels` escape hatch.
+  result = (label, 1.0'f32)
+  if not enabled or label.len == 0: return
+  let colon = label.rfind(':')
+  if colon > 0:
+    var w: float32
+    if parseWeight(label[colon + 1 .. ^1], w):
+      result = (label[0 ..< colon].strip(), w)
+      return
+  var w2: float32
+  if parseWeight(label, w2):
+    result = (defaultRel, w2)
+
 proc scanLine(line: string, kind: DiagramKind,
               labels: var Table[string, string],
-              edges: var seq[(string, string, string)],
+              edges: var seq[(string, string, string, float32)],
               groups: var seq[(string, string)],
               groupStack: seq[string],
-              defaultRel: string): bool =
+              defaultRel: string, labelWeights: bool): bool =
   ## Walk one diagram line; true when it made sense (even if it only declared a
   ## node). Partially understood lines may still emit edges before returning.
   let er = kind == dkEr
@@ -209,12 +228,14 @@ proc scanLine(line: string, kind: DiagramKind,
       i = line.len
     else:
       i = afterTail
-    let useRel = if rel.len > 0: rel else: defaultRel
+    let (useRel, useWeight) =
+      if rel.len > 0: splitLabel(rel, defaultRel, labelWeights)
+      else: (defaultRel, 1.0'f32)
     # `Animal <|-- Dog : isA` reads Dog -> Animal: a leading `<` (without a
     # matching `>`) puts the arrowhead on the left node, so flip the edge.
     let flipped = opClean.len > 0 and opClean[0] == '<' and opClean[^1] != '>'
-    if flipped: edges.add (tail, useRel, source)
-    else: edges.add (source, useRel, tail)
+    if flipped: edges.add (tail, useRel, source, useWeight)
+    else: edges.add (source, useRel, tail, useWeight)
     inc emitted
     prev = tail
     # `A --> B & C` — one source, several targets, same relation
@@ -228,8 +249,8 @@ proc scanLine(line: string, kind: DiagramKind,
           i = mark
           break
         if groupStack.len > 0: groups.add (other, groupStack[^1])
-        if flipped: edges.add (other, useRel, source)
-        else: edges.add (source, useRel, other)
+        if flipped: edges.add (other, useRel, source, useWeight)
+        else: edges.add (source, useRel, other, useWeight)
         inc emitted
         prev = other
       else:
@@ -241,11 +262,12 @@ proc scanLine(line: string, kind: DiagramKind,
   result = emitted > 0 or i >= line.len
 
 proc parseMermaid*(text: string, defaultRel = "relatedTo",
-                   groupRel = "inGroup"): MermaidGraph =
+                   groupRel = "inGroup",
+                   labelWeights = true): MermaidGraph =
   ## Convert a Mermaid document into triples. Multiple diagrams may be present;
   ## each header resets the diagram kind.
   var labels = initTable[string, string]()
-  var edges: seq[(string, string, string)]
+  var edges: seq[(string, string, string, float32)]
   var groups: seq[(string, string)]
   var groupStack: seq[string]
   var kind = dkNone
@@ -306,37 +328,42 @@ proc parseMermaid*(text: string, defaultRel = "relatedTo",
       var j = "class ".len
       discard parseNode(line, j, labels)
       continue
-    if not scanLine(line, kind, labels, edges, groups, groupStack, defaultRel):
+    if not scanLine(line, kind, labels, edges, groups, groupStack, defaultRel,
+                    labelWeights):
       result.report.skipped.add line
 
   proc nameOf(id: string): string =
     labels.getOrDefault(id, id)
 
-  var unique = initHashSet[string]()
+  var unique = initTable[string, int]() # key -> index into result.triples
   var entities = initHashSet[string]()
-  for (h, r, t) in edges:
+  for (h, r, t, w) in edges:
     let head = nameOf(h)
     let tail = nameOf(t)
     let key = head & "\t" & r & "\t" & tail
-    if key in unique:
+    if unique.hasKey(key):
+      # repeated edge: keep the strongest claim rather than the first
       inc result.report.duplicates
+      let i = unique[key]
+      if w > result.triples[i].weight: result.triples[i].weight = w
       continue
-    unique.incl key
+    unique[key] = result.triples.len
     entities.incl head
     entities.incl tail
-    result.triples.add (head: head, relation: r, tail: tail)
+    if w != 1.0'f32: inc result.report.weighted
+    result.triples.add (head: head, relation: r, tail: tail, weight: w)
   for (node, group) in groups:
     let n = nameOf(node)
     if n == group: continue
     let key = n & "\t" & groupRel & "\t" & group
-    if key in unique:
+    if unique.hasKey(key):
       inc result.report.duplicates
       continue
-    unique.incl key
+    unique[key] = result.triples.len
     entities.incl n
     entities.incl group
     inc result.report.groups
-    result.triples.add (head: n, relation: groupRel, tail: group)
+    result.triples.add (head: n, relation: groupRel, tail: group, weight: 1.0'f32)
   for id in labels.keys:
     entities.incl nameOf(id)
   result.report.nodes = entities.len

@@ -4,10 +4,10 @@
 
 Artemis trains [TransE](https://papers.nips.cc/paper/5023-translating-embeddings-for-modeling-multi-relational-data)
 embeddings (Bordes et al., NeurIPS 2013) on a table of `head relation tail`
-triples — or straight from a [Mermaid](https://mermaid.js.org) diagram —
-evaluates them with standard link-prediction metrics, answers link-prediction
-queries, draws the embedding space, and exports the learned vectors. One small
-native binary, no Python anywhere.
+triples — or straight from a [Mermaid](https://mermaid.js.org) diagram, weighted
+or not — evaluates them with standard link-prediction metrics, answers
+link-prediction queries, draws the embedding space, and exports the learned
+vectors. One small native binary, no Python anywhere.
 
 Every true fact `(h, r, t)` is trained to satisfy `h + r ≈ t`; facts are pushed
 against corrupted negatives with a margin-ranking loss and SGD.
@@ -103,6 +103,54 @@ are wiring and labels are entities. Unlabelled edges use `--default-rel`
 (default `relatedTo`). Unsupported diagram kinds and unparsable lines are
 reported on stderr, never guessed at.
 
+## Weighted graphs
+
+Edges can carry a weight: a 4th column in the TSV
+(`head<TAB>relation<TAB>tail<TAB>weight`) or a Mermaid edge label of the form
+`rel:weight` (`ada -->|collaborates:0.9| bo`, or a bare `-->|0.9|`). A weight is
+read as *intensity* — how often or how strongly the fact holds — and shapes how
+hard that edge is fitted:
+
+| `--weight-mode` | what happens |
+|---|---|
+| `sample` (default) | each epoch draws as many positives as there are edges, with probability ∝ `weight^--weight-power`: twice the weight, twice the visits |
+| `step` | every edge is still visited once per epoch, but its own SGD step is scaled by the weight — `--weight-norm mean` keeps the average step size, `max` keeps every step ≤ `lr` |
+
+`--weight-power 0` (or `--no-weights`) ignores the column, and that is *provably*
+the same run: all-ones weights reproduce the unweighted embeddings bit for bit.
+The unit suite pins that, plus the property below.
+
+`examples/collaboration.mmd` is two teams whose ties are strong (0.9/0.8) inside
+a team and weak (0.1) across:
+
+```sh
+./artemis mermaid examples/collaboration.mmd --out out/collab.tsv
+./artemis train --data out/collab.tsv --dim 16 --lr 0.05 --epochs 1500 \
+  --lr-schedule linear --lr-min 0.0005 --out out/weighted
+./artemis train --data out/collab.tsv --dim 16 --lr 0.05 --epochs 1500 \
+  --lr-schedule linear --lr-min 0.0005 --weight-power 0 --out out/plain
+./artemis predict --model out/weighted/artemis_checkpoint.bin \
+  --head Ada --rel collaborates --k 7
+```
+
+Real output — the weighted model puts every strong tie ahead of every weak one:
+
+```
+Cy   11.96961   (0.9)      Cy   12.05626   (0.9)
+Di   12.58934   (0.8)      Di   12.14532   (0.8)
+Bo   12.65133   (0.9)      Guo  12.22882   (0.1)  <- weak tie, unweighted
+Guo  13.47154   (0.1)      Bo   12.22988   (0.9)
+Hana 13.63556   (0.1)      Eve  12.25033   (0.1)
+                             (left: weighted, right: --weight-power 0)
+```
+
+Honest caveat: on a graph this small the *link-prediction* metrics do not
+separate the two runs — there are too few held-out triples for a meaningful
+comparison, and both fit the toy data. What the weights control is how hard each
+edge is pulled, which is exactly what the distance ordering above shows; the
+effect that matters on a large graph is that a 0.1-confidence edge no longer
+pulls as hard as a 1.0 one.
+
 ## Data format
 
 Tab-separated (or `--delimiter comma|space|CH`), one triple per line, in any
@@ -111,8 +159,11 @@ entity/relation vocabulary:
 ```
 alice	spouseOf	david
 alice	parentOf	bob
+alice	worksWith	carol	0.25     # optional 4th column: edge weight
 ```
 
+A 4th column is an edge weight (positive, finite; anything else makes the line
+malformed rather than silently unweighted); see *Weighted graphs*.
 Malformed lines are skipped and counted. Ids are assigned in first-appearance
 order, so runs are reproducible. For proper evaluation, train on one file and
 evaluate on held-out triples — with `--valid` and `--test` supplied to `train`,
@@ -140,6 +191,10 @@ filtered metrics use all splits as the known-truth set; standalone `eval` needs
 | `--eval-every N` | 0 | validation MRR + early stopping every N epochs |
 | `--ckpt-every N` | 0 | write `out/ckpt_eN.bin` every N epochs |
 | `--min-count N` | 1 | drop entities/relations seen fewer than N times |
+| `--weight-mode M` | sample | `sample` (draw ∝ weight) or `step` (scale the step) |
+| `--weight-power F` | 1.0 | raise weights to this power; `0` ignores them |
+| `--weight-norm N` | mean | `mean` or `max` scaling for `step` mode |
+| `--no-weights` | off | ignore a weight column entirely |
 | `--threads N` | 1 | evaluation workers (0 = one per core; training stays serial) |
 | `--valid` / `--test` | — | extra splits (truth set + metrics) |
 | `--out DIR` | . | checkpoints, `embeddings.tsv`, `vocab.json` |
@@ -170,6 +225,7 @@ reference checkpoint that is the difference between filtered MRR 0.157
 | `--out FILE` | stdout | where to write the triples |
 | `--default-rel R` | relatedTo | relation for edges without a label |
 | `--group-rel R` | inGroup | relation linking a node to its subgraph |
+| `--no-weight-labels` | off | keep numeric / `rel:w` labels as plain relations |
 
 Reads the line-based subset of Mermaid that carries graph structure:
 `flowchart`/`graph` (`-->`, `---`, `-.->`, `==>`, `-->|rel|`, `-- rel -->`,
@@ -211,7 +267,9 @@ var model = initModel(entities, relations, hp, rng)
 
 let truth = buildTruthSet(data.train, data.valid, data.test)
 let sampler = initSampler(data.train, relations.len, entities.len, true, truth)
-discard train(model, data.train, sampler, hp, data.valid, truth)
+# `data.weights` is filled from an optional 4th column; pass it to use it
+discard train(model, data.train, sampler, hp, data.valid, truth,
+              weights = data.weights)
 
 # ranked on `threads` workers; lsLinear decays lr to hp.lrMin over hp.epochs
 let metrics = evaluate(model, data.test, truth, hp.norm, threads = 0)
@@ -356,7 +414,15 @@ Deliberate deviations from the original blueprint — rationale in `Decisions.md
    constant by default so v0.1.0 runs stay bit-identical, with linear and
    exponential decay opt-in. On FB15k-237 this single knob is worth more than
    any reasonable epoch increase at a constant lr (see *Results*).
-8. **External formats are parsed, never guessed.** The Mermaid importer is a
+8. **Weights change how hard an edge is fitted, not the geometry.** TransE has
+   no weighted loss term, and the SGD step is a fixed-length sign step, so a
+   weight cannot be folded into the gradient. It is applied where it is
+   meaningful instead: `sample` mode visits an edge proportionally often
+   (the maximum-likelihood reading of intensity/count weights), `step` mode
+   scales that edge's step (the natural reading of confidence weights), and
+   normalisation keeps `--lr` meaning the same thing. All-ones weights are
+   exactly the unweighted run, which is tested rather than asserted.
+9. **External formats are parsed, never guessed.** The Mermaid importer is a
    line-based scanner over a documented subset: node ids are wiring, shapes are
    entity names, subgraphs become `inGroup` triples, unsupported diagrams and
    unparsable lines are reported on stderr. `project` likewise implements PCA
@@ -366,7 +432,7 @@ Deliberate deviations from the original blueprint — rationale in `Decisions.md
 ## Tests
 
 ```sh
-nimble test        # 68 unit tests
+nimble test        # 83 unit tests
 nimble bench       # synthetic-scale throughput benchmark
 ```
 
@@ -376,8 +442,9 @@ finite-difference gradient check, convergence + determinism on the toy graph,
 a hand-computed evaluation fixture (raw & filtered), bit-exact checkpoint
 round-trips, learning-rate schedule math (endpoints, decay, floor) plus a
 decayed run that still converges, Mermaid parsing (flowchart/state/class/ER,
-labels, subgraphs, dedup, malformed lines), hand-computed link-prediction
-rankings, PCA fixtures with TSV/SVG output checks, and — for the evaluation
+labels, subgraphs, dedup, malformed lines), weighted-graph parsing and training
+(weight vectors, all-ones/power-0 equivalence, heavy edges ending up tighter in
+both modes), hand-computed link-prediction rankings, PCA fixtures with TSV/SVG output checks, and — for the evaluation
 rewrite — a per-candidate oracle that the indexed/threaded ranks must match on
 both norms at 1, 3, 4, 8 and 16 workers.
 
@@ -388,6 +455,17 @@ search, servers. Architecturally, `transEGrad`/`computePair` is the only place
 that would need extending for a new norm-based model.
 
 ## Release notes
+
+### v0.4.0
+
+- **Weighted graphs** — a 4th TSV column or a Mermaid `rel:weight` / bare-number
+  edge label. `--weight-mode sample` (default) draws positives ∝ weight;
+  `--weight-mode step` scales each edge's SGD step by its normalised weight;
+  `--weight-power 0` / `--no-weights` ignore weights and reproduce the
+  unweighted run bit for bit. `examples/collaboration.mmd` demonstrates the
+  effect: strong ties come out ahead of weak ones, where an unweighted run
+  interleaves them.
+- 83 unit tests (68 at v0.3.0).
 
 ### v0.3.0
 

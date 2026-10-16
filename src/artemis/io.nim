@@ -1,5 +1,5 @@
 ## Data ingestion: TSV parsing, vocabulary building, truth-set index.
-import std/[options, tables, sets, strutils, syncio]
+import std/[options, tables, sets, strutils, syncio, math]
 import ./types
 
 type
@@ -10,22 +10,40 @@ type
     skippedValid*: int ## unknown names (not in train vocab)
     skippedTest*: int
     filteredRare*: int ## raw triples dropped by min-count
+    weightedTrain*: int ## training triples carrying an explicit weight != 1
+
+proc parseWeight*(s: string, w: var float32): bool =
+  ## A weight must be a finite, strictly positive float.
+  var value: float
+  try:
+    value = parseFloat(s)
+  except ValueError:
+    return false
+  if classify(value) in {fcNan, fcInf, fcNegInf} or value <= 0.0:
+    return false
+  w = value.float32
+  true
 
 proc parseLine*(line: string, delim: char = '\t'): Option[RawTriple] =
-  ## Parse one `head<delim>relation<delim>tail` line.
+  ## Parse one `head<delim>relation<delim>tail[<delim>weight]` line. The weight
+  ## column is optional and defaults to 1.0; a non-positive or non-numeric
+  ## weight makes the line malformed rather than silently unweighted.
   ## Returns none for malformed lines (wrong field count, empty field,
   ## blank line, comment).
   if line.len == 0 or line[0] == '#':
     return none(RawTriple)
   let parts = line.split(delim)
-  if parts.len != 3:
+  if parts.len != 3 and parts.len != 4:
     return none(RawTriple)
   let h = parts[0].strip
   let r = parts[1].strip
   let t = parts[2].strip
   if h.len == 0 or r.len == 0 or t.len == 0:
     return none(RawTriple)
-  result = some((head: h, relation: r, tail: t))
+  var w = 1.0'f32
+  if parts.len == 4 and not parseWeight(parts[3].strip, w):
+    return none(RawTriple)
+  result = some((head: h, relation: r, tail: t, weight: w))
 
 proc loadRawTriples*(path: string, delim: char = '\t',
                      malformed: var int): seq[RawTriple] =
@@ -65,10 +83,8 @@ proc buildVocab*(raws: seq[RawTriple], minCount: int = 1,
     discard result.relations.internId(t.relation)
     discard result.entities.internId(t.tail)
 
-proc toTriples*(raws: seq[RawTriple], entities, relations: Vocab,
-                skipped: var int): seq[Triple] =
-  ## Convert raw triples to id triples using an existing vocab.
-  ## Triples mentioning unknown names are skipped and counted.
+proc toTriplesImpl(raws: seq[RawTriple], entities, relations: Vocab,
+                   skipped: var int, weights: ptr seq[float32]): seq[Triple] =
   skipped = 0
   for t in raws:
     let h = entities.toId.getOrDefault(t.head, -1)
@@ -78,6 +94,18 @@ proc toTriples*(raws: seq[RawTriple], entities, relations: Vocab,
       inc skipped
       continue
     result.add Triple(head: h, rel: r, tail: e)
+    if weights != nil: weights[].add t.weight
+
+proc toTriples*(raws: seq[RawTriple], entities, relations: Vocab,
+                skipped: var int): seq[Triple] =
+  ## Convert raw triples to id triples using an existing vocab.
+  ## Triples mentioning unknown names are skipped and counted.
+  toTriplesImpl(raws, entities, relations, skipped, nil)
+
+proc toTriples*(raws: seq[RawTriple], entities, relations: Vocab,
+                skipped: var int, weights: var seq[float32]): seq[Triple] =
+  ## Same, also collecting one weight per kept triple (parallel to the result).
+  toTriplesImpl(raws, entities, relations, skipped, addr weights)
 
 proc loadDataset*(trainPath: string, hp: HyperParams,
                   validPath: string = "", testPath: string = ""
@@ -89,9 +117,12 @@ proc loadDataset*(trainPath: string, hp: HyperParams,
   let rawsTrain = loadRawTriples(trainPath, hp.delimiter, report.malformedTrain)
   let (entities, relations) = buildVocab(rawsTrain, hp.minCount, report.filteredRare)
   var skippedTrain = 0
-  result.data.train = toTriples(rawsTrain, entities, relations, skippedTrain)
+  result.data.train = toTriples(rawsTrain, entities, relations, skippedTrain,
+                                result.data.weights)
   result.entities = entities
   result.relations = relations
+  for w in result.data.weights:
+    if w != 1.0'f32: inc report.weightedTrain
   if validPath.len > 0:
     let raws = loadRawTriples(validPath, hp.delimiter, report.malformedValid)
     result.data.valid = toTriples(raws, entities, relations, report.skippedValid)

@@ -14,6 +14,42 @@ proc rawCopySeq(t: Tensor[float32]): seq[float32] =
   if n > 0:
     copyMem(addr result[0], t.storage.raw_buffer, n * sizeof(float32))
 
+proc weightedDraw(rng: var Rand, cumulative: openArray[float64],
+                  total: float64): int =
+  ## Index of the edge drawn with probability proportional to its weight; the
+  ## table is the running sum, so this is a binary search on a uniform draw.
+  var u = rng.rand(total)
+  var lo = 0
+  var hi = cumulative.len - 1
+  while lo < hi:
+    let mid = (lo + hi) div 2
+    if cumulative[mid] <= u: lo = mid + 1
+    else: hi = mid
+  result = lo
+
+proc weightFactors(hp: HyperParams, weights: seq[float32]): seq[float32] =
+  ## Per-edge multiplier for `wmStep`: weights are raised to `hp.weightPower`
+  ## and divided by their mean (or max), so an all-equal file behaves exactly
+  ## like an unweighted run and `--lr` keeps its meaning.
+  if weights.len == 0: return
+  result = newSeq[float32](weights.len)
+  var total = 0.0'f32
+  var peak = 0.0'f32
+  for i, w in weights:
+    let t = pow(max(w, 0.0'f32), hp.weightPower)
+    result[i] = t
+    total += t
+    peak = max(peak, t)
+  if total <= 0.0'f32:
+    for i in 0 ..< result.len: result[i] = 1.0'f32
+    return
+  let denom =
+    case hp.weightNorm
+    of wnMean: total / weights.len.float32
+    of wnMax: peak
+  if denom <= 0.0'f32: return
+  for i in 0 ..< result.len: result[i] = result[i] / denom
+
 proc scheduledLr*(hp: HyperParams, epoch: int): float32 =
   ## Learning rate for 1-based `epoch`. `lsConstant` returns `hp.lr` for every
   ## epoch, which keeps v0.1.0 runs bit-identical.
@@ -47,15 +83,39 @@ type
 proc train*(m: var TransEModel, trainData: seq[Triple], sampler: Sampler,
             hp: HyperParams, valid: seq[Triple] = @[],
             truth: HashSet[Triple] = initHashSet[Triple](),
-            ckptDir: string = ""): TrainResult =
+            ckptDir: string = "",
+            weights: seq[float32] = @[]): TrainResult =
   ## SGD over shuffled positives; `hp.negPerPos` negatives each.
+  ##
+  ## Weighted graphs: with `hp.weightMode == wmSample` each epoch draws
+  ## `trainData.len` positives with probability proportional to `w^power`
+  ## (so an edge with twice the weight is seen twice as often, which is the
+  ## maximum-likelihood reading of intensity/count weights). With `wmStep`
+  ## every edge is still visited once per epoch and instead the SGD step is
+  ## scaled by the normalised weight (the natural reading of confidence
+  ## weights). `hp.useWeights = false`, or an empty `weights`, ignores them.
   ## When `hp.evalEvery > 0` and `valid` is non-empty, filtered MRR on the
   ## validation split drives early stopping (patience = hp.patience) and the
   ## best-scoring weights are restored at the end.
   var rng = initRand(hp.seed)
   var scratch = initScratch(hp.dim)
   var order = trainData
+  var orderIdx: seq[int]
   let t0 = epochTime()
+  let weighted = hp.useWeights and weights.len == trainData.len and
+                 weights.len > 0
+  let sampling = weighted and hp.weightMode == wmSample
+  var cumulative: seq[float64]
+  var totalWeight = 0.0
+  var factors: seq[float32]
+  if weighted:
+    if sampling:
+      cumulative = newSeq[float64](weights.len)
+      for i, w in weights:
+        totalWeight += pow(max(w, 0.0'f32), hp.weightPower)
+        cumulative[i] = totalWeight
+    else:
+      factors = weightFactors(hp, weights)
   let doValid = hp.evalEvery > 0 and valid.len > 0
   var bestMRR = -1.0
   var bestEnt, bestRel: seq[float32]
@@ -64,18 +124,45 @@ proc train*(m: var TransEModel, trainData: seq[Triple], sampler: Sampler,
   let logEvery = max(1, hp.epochs div 100)
 
   for epoch in 1 .. hp.epochs:
-    rng.shuffle(order)
+    var epochLoss = 0.0
     # Effective learning rate for this epoch (constant unless a schedule is on).
     var ehp = hp
     ehp.lr = scheduledLr(hp, epoch)
-    var epochLoss = 0.0
-    for bStart in countup(0, order.len - 1, hp.batchSize):
-      let bEnd = min(bStart + hp.batchSize, order.len)
-      for i in bStart ..< bEnd:
-        let pos = order[i]
+    if sampling:
+      # One epoch = one weighted draw per triple, so the work per epoch (and
+      # therefore the wall clock) matches the unweighted loop.
+      for _ in 0 ..< trainData.len:
+        let pos = trainData[weightedDraw(rng, cumulative, totalWeight)]
         for _ in 0 ..< hp.negPerPos:
           let neg = sampler.sample(rng, pos)
           epochLoss += trainStep(m, pos, neg, ehp, scratch)
+    elif factors.len > 0:
+      # Step mode: shuffle *positions* so each edge keeps its own weight, and
+      # scale that edge's step. With every weight equal to 1 the factors are
+      # exactly 1.0 and the shuffle draws the same RNG stream as the plain
+      # triple shuffle, so an unweighted file is bit-identical to v0.3.0.
+      if orderIdx.len == 0:
+        orderIdx = newSeq[int](order.len)
+        for i in 0 ..< orderIdx.len: orderIdx[i] = i
+      rng.shuffle(orderIdx)
+      for bStart in countup(0, orderIdx.len - 1, hp.batchSize):
+        let bEnd = min(bStart + hp.batchSize, orderIdx.len)
+        for i in bStart ..< bEnd:
+          let oi = orderIdx[i]
+          var whp = ehp
+          whp.lr = ehp.lr * factors[oi]
+          for _ in 0 ..< hp.negPerPos:
+            let neg = sampler.sample(rng, order[oi])
+            epochLoss += trainStep(m, order[oi], neg, whp, scratch)
+    else:
+      rng.shuffle(order)
+      for bStart in countup(0, order.len - 1, hp.batchSize):
+        let bEnd = min(bStart + hp.batchSize, order.len)
+        for i in bStart ..< bEnd:
+          let pos = order[i]
+          for _ in 0 ..< hp.negPerPos:
+            let neg = sampler.sample(rng, pos)
+            epochLoss += trainStep(m, pos, neg, ehp, scratch)
     let meanLoss = epochLoss / (order.len * hp.negPerPos).float64
 
     var mrr = NaN
