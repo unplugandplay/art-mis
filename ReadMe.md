@@ -4,8 +4,10 @@
 
 Artemis trains [TransE](https://papers.nips.cc/paper/5023-translating-embeddings-for-modeling-multi-relational-data)
 embeddings (Bordes et al., NeurIPS 2013) on a table of `head relation tail`
-triples, evaluates them with standard link-prediction metrics, and exports the
-learned vectors — as a small native binary, with no Python anywhere.
+triples — or straight from a [Mermaid](https://mermaid.js.org) diagram —
+evaluates them with standard link-prediction metrics, answers link-prediction
+queries, draws the embedding space, and exports the learned vectors. One small
+native binary, no Python anywhere.
 
 Every true fact `(h, r, t)` is trained to satisfy `h + r ≈ t`; facts are pushed
 against corrupted negatives with a margin-ranking loss and SGD.
@@ -22,7 +24,7 @@ Requires Nim ≥ 2.0 and nimble.
 
 ```sh
 git clone https://github.com/unplugandplay/art-mis
-cd art-mis && git checkout toy
+cd art-mis
 nimble deps            # installs arraymancer
 nimble build -d:release
 ```
@@ -42,6 +44,64 @@ nimble build -d:release
 # export plain-text embeddings + metadata
 ./artemis export --model artemis_checkpoint.bin --out out/
 ```
+
+## From a Mermaid diagram to embeddings
+
+A diagram you already have is enough — flowcharts, state, class and ER diagrams
+become triples, and subgraphs become `inGroup` facts instead of having to be
+repeated as edges.
+
+```sh
+# 1. diagram -> head/relation/tail triples (stdout, or --out FILE)
+./artemis mermaid examples/company.mmd --out out/company.tsv
+
+# 2. train on it (22 triples, so this takes about a second)
+./artemis train --data out/company.tsv --dim 24 --lr 0.05 --epochs 600 \
+  --lr-schedule linear --lr-min 0.001 --out out
+
+# 3. ask for a fact the diagram states
+./artemis predict --model out/artemis_checkpoint.bin --head Dave --rel spouseOf --k 3
+
+# 4. see the embedding space: out/map.svg + out/projection.tsv
+./artemis project --model out/artemis_checkpoint.bin --out out
+```
+
+Real output from step 3 (`Erin` is Dave's spouse in the diagram):
+
+```
+top 3 tails for (Dave, spouseOf, ?)
+Erin                                 12.82485
+Frank                                14.16890
+Sales                                14.80359
+```
+
+The interesting part is step 3 with a *hidden* fact: delete one edge, retrain,
+and the model puts it back at rank 1.
+
+```sh
+grep -v $'Alice\tmanages\tCarol' out/company.tsv > out/company_holdout.tsv
+./artemis train --data out/company_holdout.tsv --dim 12 --lr 0.05 --epochs 2000 \
+  --lr-schedule linear --lr-min 0.0005 --out out/holdout
+./artemis predict --model out/holdout/artemis_checkpoint.bin --head Alice \
+  --rel manages --filter out/company_holdout.tsv --k 3
+```
+
+```
+top 3 tails for (Alice, manages, ?)  [21 known triples filtered]
+Carol                                11.27643   <- the hidden edge, back at rank 1
+Frank                                11.46970
+Erin                                 11.80741
+```
+
+`docs/company-map.svg` is what step 4 produces for the bundled example (the
+same command regenerates it byte for byte):
+
+![PCA projection of the company embeddings](docs/company-map.svg)
+
+Naming rule: `alice[Alice]` connects as `alice` but is stored as `Alice`, so ids
+are wiring and labels are entities. Unlabelled edges use `--default-rel`
+(default `relatedTo`). Unsupported diagram kinds and unparsable lines are
+reported on stderr, never guessed at.
 
 ## Data format
 
@@ -92,6 +152,9 @@ artemis eval    --model checkpoint.bin --data test.tsv [--threads N] \
                 [--truth train.tsv,valid.tsv]
 artemis export  --model checkpoint.bin --out dir
 artemis nearest --model checkpoint.bin --entity NAME [--k 10] [--metric cosine|l2]
+artemis mermaid FILE.mmd [--out triples.tsv] [--default-rel R] [--group-rel R]
+artemis predict --model checkpoint.bin --rel NAME (--head NAME | --tail NAME) [--k 10]
+artemis project --model checkpoint.bin [--out DIR]
 artemis --version
 ```
 
@@ -99,6 +162,41 @@ artemis --version
 other splits to get the standard train∪valid∪test protocol — on the FB15k-237
 reference checkpoint that is the difference between filtered MRR 0.157
 (test-only truth) and the 0.207 reported below.
+
+### `artemis mermaid FILE.mmd [options]`
+
+| Option | Default | Meaning |
+|--------|---------|---------|
+| `--out FILE` | stdout | where to write the triples |
+| `--default-rel R` | relatedTo | relation for edges without a label |
+| `--group-rel R` | inGroup | relation linking a node to its subgraph |
+
+Reads the line-based subset of Mermaid that carries graph structure:
+`flowchart`/`graph` (`-->`, `---`, `-.->`, `==>`, `-->|rel|`, `-- rel -->`,
+chains `A --> B --> C`, `A --> B & C`, `subgraph title … end`),
+`stateDiagram(-v2)`, `classDiagram` and `erDiagram` (`A ||--o{ B : places`).
+Attribute/member blocks are skipped, repeated triples are deduplicated, and
+anything else is reported on stderr — a diagram with one odd line still converts.
+
+### `artemis predict --model checkpoint.bin --rel NAME (--head NAME | --tail NAME)`
+
+| Option | Default | Meaning |
+|--------|---------|---------|
+| `--k N` | 10 | how many candidates to print |
+| `--filter F[,F...]` | — | drop candidates already true in these files |
+| `--allow-self` | off | also propose the entity you already named |
+
+Ranks candidates by `d(h, r, ·)` (with `--head`) or `d(·, r, t)` (with `--tail`),
+best first, using the norm stored in the checkpoint. Distances are the
+dissimilarity scores, so lower is better.
+
+### `artemis project --model checkpoint.bin [--out DIR]`
+
+Writes `map.svg` (self-contained scatter: entities are circles, relations are
+diamonds, labelled) and `projection.tsv` (`name`, `kind`, `x`, `y`). The
+projection is a PCA of the entity rows by power iteration with deflation — no
+maths dependency — and is deterministic, so the same checkpoint always draws the
+same picture. `--no-relations` and `--no-labels` trim the output.
 
 ## Library usage
 
@@ -258,11 +356,17 @@ Deliberate deviations from the original blueprint — rationale in `Decisions.md
    constant by default so v0.1.0 runs stay bit-identical, with linear and
    exponential decay opt-in. On FB15k-237 this single knob is worth more than
    any reasonable epoch increase at a constant lr (see *Results*).
+8. **External formats are parsed, never guessed.** The Mermaid importer is a
+   line-based scanner over a documented subset: node ids are wiring, shapes are
+   entity names, subgraphs become `inGroup` triples, unsupported diagrams and
+   unparsable lines are reported on stderr. `project` likewise implements PCA
+   (power iteration + deflation) and SVG output in ~150 dependency-free lines
+   rather than pulling in a maths or plotting library.
 
 ## Tests
 
 ```sh
-nimble test        # 39 unit tests
+nimble test        # 68 unit tests
 nimble bench       # synthetic-scale throughput benchmark
 ```
 
@@ -271,9 +375,11 @@ invariants, hand-computed L1/L2 distances, negative-sampling distributions,
 finite-difference gradient check, convergence + determinism on the toy graph,
 a hand-computed evaluation fixture (raw & filtered), bit-exact checkpoint
 round-trips, learning-rate schedule math (endpoints, decay, floor) plus a
-decayed run that still converges, and — for the evaluation rewrite — a
-per-candidate oracle that the indexed/threaded ranks must match on both norms at
-1, 3, 4, 8 and 16 workers.
+decayed run that still converges, Mermaid parsing (flowchart/state/class/ER,
+labels, subgraphs, dedup, malformed lines), hand-computed link-prediction
+rankings, PCA fixtures with TSV/SVG output checks, and — for the evaluation
+rewrite — a per-candidate oracle that the indexed/threaded ranks must match on
+both norms at 1, 3, 4, 8 and 16 workers.
 
 ## Non-goals
 
@@ -282,6 +388,22 @@ search, servers. Architecturally, `transEGrad`/`computePair` is the only place
 that would need extending for a new norm-based model.
 
 ## Release notes
+
+### v0.3.0
+
+- **`artemis mermaid diagram.mmd`** — Mermaid flowcharts, state, class and ER
+  diagrams become triples; node shapes provide entity names and subgraphs become
+  `inGroup` facts. Bundled example: `examples/company.mmd` → 11 entities,
+  14 edges, 8 group links.
+- **`artemis predict`** — link-prediction queries on a trained model:
+  `--head NAME --rel NAME` ranks tails, `--tail NAME --rel NAME` ranks heads,
+  `--filter train.tsv` hides facts that are already known, and a hidden edge
+  comes back at rank 1 in the bundled example.
+- **`artemis project`** — PCA (power iteration, no maths dependency) of the
+  embeddings into a labelled `map.svg` plus `projection.tsv`; deterministic, so
+  the same checkpoint always draws the same picture.
+- `artemis --version` unchanged in spirit: the binary reports 0.3.0.
+- 68 unit tests (39 at v0.2.0).
 
 ### v0.2.0
 

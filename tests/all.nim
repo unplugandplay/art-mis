@@ -6,3 +6,6 @@ import t_gradients
 import t_train
 import t_evaluate
 import t_persist
+import t_mermaid
+import t_predict
+import t_project

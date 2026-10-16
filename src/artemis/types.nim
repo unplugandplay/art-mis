@@ -4,7 +4,7 @@
 import std/[tables, hashes]
 import arraymancer
 
-const ArtemisVersion* = "0.2.0"
+const ArtemisVersion* = "0.3.0"
   ## Keep in sync with `version` in `artemis.nimble` (and the release tag);
   ## `artemis --version` prints it, so a built binary is self-identifying.
 

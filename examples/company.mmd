@@ -1,0 +1,45 @@
+%% Artemis demo — a small company knowledge graph.
+%%
+%%   artemis mermaid examples/company.mmd --out data/company.tsv
+%%   artemis train   --data data/company.tsv --dim 24 --lr 0.05 --epochs 600 \
+%%                   --lr-schedule linear --lr-min 0.001
+%%   artemis predict --model artemis_checkpoint.bin --head dave --rel reportsTo \
+%%                   --filter data/company.tsv
+%%   artemis project --model artemis_checkpoint.bin --out out/
+%%
+%% Subgraphs become `inGroup` triples, so the diagram's own layout carries
+%% information instead of having to repeat it as edges.
+flowchart LR
+  subgraph eng [Engineering]
+    alice[Alice]
+    bob[Bob]
+    carol[Carol]
+    dave[Dave]
+  end
+  subgraph sales [Sales]
+    erin[Erin]
+    frank[Frank]
+  end
+  subgraph exec [Executive]
+    grace[Grace]
+    heidi[Heidi]
+  end
+
+  grace -->|manages| alice
+  grace -->|manages| erin
+  heidi -->|advises| grace
+
+  alice -->|manages| bob
+  alice -->|manages| carol
+  erin -->|manages| frank
+
+  bob -->|mentors| dave
+  carol -->|mentors| dave
+
+  bob -->|reportsTo| alice
+  carol -->|reportsTo| alice
+  alice -->|reportsTo| grace
+  erin -->|reportsTo| grace
+  frank -->|reportsTo| erin
+
+  dave -->|spouseOf| erin

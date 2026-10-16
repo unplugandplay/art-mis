@@ -212,6 +212,8 @@ with `numpy` without errors (script in `scripts/check_export.py`).
 - [x] `eval --truth FILE[,FILE]` and `--threads N`: filtered ranking against the
   full known-true set (FR-6) and parallel ranking (D16, D18).
 - [x] `nearest`: cosine / Euclidean over entity rows, top-k print.
+- [x] v0.3.0 companions: `mermaid` (diagram → triples, D20), `predict`
+  (link-prediction queries, D21), `project` (PCA projection + SVG, D22).
 - [x] Man-style README: install, quickstart on toy data, FB15k-237 repro
   commands, flag reference, results table.
 

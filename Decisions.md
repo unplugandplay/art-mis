@@ -274,3 +274,59 @@ the productive lr range longer. The schedule is a pure function tested directly
 (`scheduledLr`) and applied per epoch in the loop; the active lr is printed when
 a schedule is on and recorded in `vocab.json`. Checkpoint layout unchanged (the
 schedule is a training-time knob, not model state).
+
+## D20 — Mermaid is ingested by a documented line-based subset
+
+**Decision.** `artemis mermaid` converts flowchart/graph, stateDiagram(-v2),
+classDiagram and erDiagram documents into triples. Node ids wire the graph,
+shape text becomes the entity name, `subgraph … end` emits
+`(member, inGroup, group)`, duplicate triples are dropped, and unsupported
+diagram kinds or unparsable lines are reported on stderr.
+
+**Context.** Mermaid has a dozen diagram types and a full grammar; a
+general parser is a project of its own, and silently mis-reading a diagram into
+wrong triples would poison a training run with no visible symptom. The useful
+subset — the one that actually encodes a graph — is small and stable.
+
+**Consequence.** The importer is ~300 lines with 14 tests, and its output is
+auditable: every line it did not understand is shown. Nodes referenced only in
+edges still work (the id is the fallback name), so half-annotated diagrams
+convert. Two grammar traps are pinned by tests: `-->|rel|` splits the trailing
+`|` off the arrow run while ER's `||--o{` keeps it, and a leading `<`
+(`Animal <|-- Dog : isA`) flips the edge because the arrowhead sits on the left
+node.
+
+## D21 — `predict` excludes the named entity by default
+
+**Decision.** `artemis predict` ranks every entity except the one the caller
+already named (`--allow-self` opts back in); `--filter` additionally hides
+candidates that already form a known-true triple.
+
+**Context.** First implementation kept the named entity in the pool, and
+`Alice manages Alice` outranked the genuinely hidden `Alice manages Carol` in
+the bundled demo — a self-loop is nearly always the best-scoring nonsense.
+`evaluate` never counts the true entity as a competitor to itself either, so
+excluding it is also the consistent reading.
+
+**Consequence.** Queries answer the question that was asked; the underlying
+candidate universe stays complete for scoring, and `allowSelf` is tested so the
+choice is visible rather than buried.
+
+## D22 — Visualisation is PCA + hand-written SVG, and deterministic
+
+**Decision.** `artemis project` reduces the entity matrix to two dimensions by
+power iteration on the covariance matrix, deflates for the second component,
+projects relations with the same axes, and writes a self-contained SVG plus a
+TSV. No maths or plotting dependency is added, and the iteration starts from a
+fixed vector.
+
+**Context.** A picture is the fastest way to show that embeddings learned
+something, but Arraymancer is already the only dependency and the PRD's risk
+table treats even that as the thing to keep small. The projection is ~150 lines
+of straightforward linear algebra.
+
+**Consequence.** `docs/company-map.svg` is reproducible byte for byte from the
+documented demo command, tests pin the axis on a one-dimensional fixture and the
+separation of two clusters, and XML escaping of entity names is tested (labels
+come from user diagrams). Degenerate models (all vectors identical, or a single
+entity) project to a point instead of dividing by zero.

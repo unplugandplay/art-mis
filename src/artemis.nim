@@ -17,9 +17,12 @@ import artemis/gradients
 import artemis/train
 import artemis/evaluate
 import artemis/persist
+import artemis/mermaid
+import artemis/predict
+import artemis/project
 
 export types, io, embeddings, scoring, sampling, gradients, train, evaluate,
-       persist
+       persist, mermaid, predict, project
 
 when isMainModule:
   import artemis/cli

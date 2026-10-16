@@ -25,5 +25,6 @@ data/*.zip
 # OS noise
 .DS_Store
 
-# Smoke-run artifacts
+# Smoke-run artifacts and demo output
 /out_probe/
+/out/

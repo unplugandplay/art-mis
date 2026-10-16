@@ -8,6 +8,10 @@ import ./sampling
 import ./train
 import ./evaluate
 import ./persist
+import ./scoring
+import ./mermaid
+import ./predict
+import ./project
 
 const GeneralHelp = """
 artemis — TransE knowledge-graph embeddings in Nim
@@ -17,6 +21,9 @@ Usage:
   artemis eval    --model checkpoint.bin --data test.tsv [--truth train.tsv,valid.tsv]
   artemis export  --model checkpoint.bin [--out dir]
   artemis nearest --model checkpoint.bin --entity NAME [--k 10] [--metric cosine|l2]
+  artemis mermaid FILE.mmd [--out triples.tsv] [--default-rel R] [--group-rel R]
+  artemis predict --model checkpoint.bin --rel NAME (--head NAME | --tail NAME) [--k 10]
+  artemis project --model checkpoint.bin [--out DIR]
   artemis --version
 
 Train options:
@@ -44,6 +51,24 @@ Eval options:
   --threads N      eval worker threads            (default 1; 0 = one per core)
   --truth F[,F...] extra known-true files for filtered ranking (e.g. train,valid)
   --delimiter CH   tab | comma | space | other    (default tab)
+
+Mermaid options:
+  --out FILE       write triples here             (default: stdout)
+  --default-rel R  relation for unlabelled edges  (default relatedTo)
+  --group-rel R    relation for subgraph members  (default inGroup)
+
+Query options (predict):
+  --head NAME      rank tails for (head, rel, ?)
+  --tail NAME      rank heads for (?, rel, tail)
+  --rel NAME       relation (required)
+  --k N            how many candidates to print   (default 10)
+  --filter F[,F...] drop candidates already true in these files
+  --allow-self     also propose the entity you named (off by default)
+
+Project options:
+  --out DIR        destination for map.svg + projection.tsv (default .)
+  --no-relations   project entities only
+  --no-labels      draw points without text labels
 """
 
 proc die(msg: string) {.noreturn.} =
@@ -59,12 +84,15 @@ proc parseDelim(s: string): char =
     if s.len == 1: s[0]
     else: die("delimiter must be one char or tab|comma|space")
 
-const flagKeys = ["quiet", "bern", "no-bern", "help"]
+const flagKeys = ["quiet", "bern", "no-bern", "help", "allow-self",
+                  "no-relations", "no-labels"]
 
 proc collectOpts(args: seq[string]): tuple[opts: Table[string, string],
-                                           flags: Table[string, bool]] =
+                                           flags: Table[string, bool],
+                                           positional: seq[string]] =
   ## parseopt yields `--key value` values as separate cmdArgument tokens;
   ## known boolean flags are kept in `flags`, everything else expects a value.
+  ## Arguments that are not attached to an option land in `positional`.
   var p = initOptParser(args)
   var pending = ""
   while true:
@@ -76,7 +104,7 @@ proc collectOpts(args: seq[string]): tuple[opts: Table[string, string],
         result.opts[pending] = p.key
         pending = ""
       else:
-        die("unexpected argument: " & p.key)
+        result.positional.add p.key
     of cmdShortOption, cmdLongOption:
       if pending.len > 0:
         die("option --" & pending & " expects a value")
@@ -102,7 +130,7 @@ proc optThreads(o: Table[string, string]): int =
   if n == 0: max(1, countProcessors()) else: n
 
 proc cmdTrain(args: seq[string]) =
-  let (opts, flags) = collectOpts(args)
+  let (opts, flags, _) = collectOpts(args)
   if "data" notin opts:
     die("train requires --data PATH\n" & GeneralHelp)
   var hp = HyperParams()
@@ -191,7 +219,7 @@ proc cmdTrain(args: seq[string]) =
   stderr.writeLine "exports: " & (outDir / "embeddings.tsv") & ", " & (outDir / "vocab.json")
 
 proc cmdEval(args: seq[string]) =
-  let (opts, _) = collectOpts(args)
+  let (opts, _, _) = collectOpts(args)
   if "model" notin opts or "data" notin opts:
     die("eval requires --model PATH --data PATH")
   let (model, hp) = loadCheckpoint(opts["model"])
@@ -221,7 +249,7 @@ proc cmdEval(args: seq[string]) =
   echo $r
 
 proc cmdExport(args: seq[string]) =
-  let (opts, _) = collectOpts(args)
+  let (opts, _, _) = collectOpts(args)
   if "model" notin opts:
     die("export requires --model PATH")
   let outDir = opts.getOrDefault("out", ".")
@@ -232,7 +260,7 @@ proc cmdExport(args: seq[string]) =
   stderr.writeLine "exports: " & (outDir / "embeddings.tsv") & ", " & (outDir / "vocab.json")
 
 proc cmdNearest(args: seq[string]) =
-  let (opts, _) = collectOpts(args)
+  let (opts, _, _) = collectOpts(args)
   if "model" notin opts or "entity" notin opts:
     die("nearest requires --model PATH --entity NAME")
   let k = opts.optInt("k", 10)
@@ -265,6 +293,97 @@ proc cmdNearest(args: seq[string]) =
     inc shown
     if shown >= k: break
 
+proc cmdMermaid(args: seq[string]) =
+  let (opts, _, positional) = collectOpts(args)
+  var path = opts.getOrDefault("in", "")
+  if path.len == 0 and positional.len > 0: path = positional[0]
+  if path.len == 0:
+    die("mermaid requires a diagram file: artemis mermaid diagram.mmd [--out triples.tsv]")
+  if not fileExists(path): die("no such file: " & path)
+  let g = parseMermaid(readFile(path),
+                       opts.getOrDefault("default-rel", "relatedTo"),
+                       opts.getOrDefault("group-rel", "inGroup"))
+  for diagram in g.report.unsupported:
+    stderr.writeLine "warning: unsupported diagram, skipped: " & diagram
+  for line in g.report.skipped:
+    stderr.writeLine "warning: could not parse: " & line
+  stderr.writeLine &"mermaid: {g.report.nodes} entities, {g.report.edges} edges, " &
+                   &"{g.report.groups} group links, {g.report.duplicates} duplicates dropped"
+  if g.triples.len == 0:
+    stderr.writeLine "warning: no triples produced"
+  let outPath = opts.getOrDefault("out", "")
+  if outPath.len > 0:
+    var f = open(outPath, fmWrite)
+    defer: f.close()
+    for t in g.triples:
+      f.writeLine t.head & "\t" & t.relation & "\t" & t.tail
+    stderr.writeLine "triples: " & outPath
+  else:
+    for t in g.triples:
+      echo t.head & "\t" & t.relation & "\t" & t.tail
+
+proc loadTruthFiles(spec: string, delimiter: char, model: TransEModel): HashSet[Triple] =
+  ## `--filter a.tsv,b.tsv`: known-true triples to exclude from predictions.
+  for path in spec.split(','):
+    let p = path.strip
+    if p.len == 0: continue
+    var malformed, skipped = 0
+    let triples = toTriples(loadRawTriples(p, delimiter, malformed),
+                            model.entities, model.relations, skipped)
+    for t in triples: result.incl t
+
+proc cmdPredict(args: seq[string]) =
+  let (opts, flags, _) = collectOpts(args)
+  if "model" notin opts or "rel" notin opts:
+    die("predict requires --model PATH --rel NAME and --head or --tail")
+  if ("head" in opts) == ("tail" in opts):
+    die("predict needs exactly one of --head NAME (rank tails) or --tail NAME (rank heads)")
+  let k = opts.optInt("k", 10)
+  if k < 1: die("--k must be >= 1")
+  let (model, hp) = loadCheckpoint(opts["model"])
+  let relName = opts["rel"]
+  if relName notin model.relations.toId: die("unknown relation: " & relName)
+  let rel = model.relations.toId[relName]
+  var truth = initHashSet[Triple]()
+  if "filter" in opts:
+    truth = loadTruthFiles(opts["filter"], hp.delimiter, model)
+  let allowSelf = "allow-self" in flags
+  var v = view(model)
+  v.norm = hp.norm
+  if "head" in opts:
+    let headName = opts["head"]
+    if headName notin model.entities.toId: die("unknown entity: " & headName)
+    let preds = predictTails(v, model.entities.toId[headName], rel, k, truth,
+                             allowSelf)
+    echo &"top {preds.len} tails for ({headName}, {relName}, ?)" &
+         (if truth.len > 0: &"  [{truth.len} known triples filtered]" else: "")
+    for p in preds:
+      echo &"{model.entities.names[p.entity]:<34} {p.score:10.5f}"
+  else:
+    let tailName = opts["tail"]
+    if tailName notin model.entities.toId: die("unknown entity: " & tailName)
+    let preds = predictHeads(v, rel, model.entities.toId[tailName], k, truth,
+                             allowSelf)
+    echo &"top {preds.len} heads for (?, {relName}, {tailName})" &
+         (if truth.len > 0: &"  [{truth.len} known triples filtered]" else: "")
+    for p in preds:
+      echo &"{model.entities.names[p.entity]:<34} {p.score:10.5f}"
+
+proc cmdProject(args: seq[string]) =
+  let (opts, flags, _) = collectOpts(args)
+  if "model" notin opts:
+    die("project requires --model PATH")
+  let outDir = opts.getOrDefault("out", ".")
+  createDir(outDir)
+  let (model, _) = loadCheckpoint(opts["model"])
+  let p = project(model, includeRelations = not ("no-relations" in flags))
+  if p.points.len == 0: die("nothing to project (empty model)")
+  writeProjectionTsv(p, outDir / "projection.tsv")
+  writeProjectionSvg(p, outDir / "map.svg", labels = not ("no-labels" in flags))
+  stderr.writeLine &"projected {p.points.len} vectors to 2D " &
+                   &"(variance captured: {p.var1:.4g} / {p.var2:.4g})"
+  stderr.writeLine "wrote " & (outDir / "map.svg") & " and " & (outDir / "projection.tsv")
+
 proc main*() =
   let args = commandLineParams()
   if args.len == 0 or args[0] in ["-h", "--help", "help"]:
@@ -278,6 +397,9 @@ proc main*() =
   of "eval": cmdEval(args[1 ..^ 1])
   of "export": cmdExport(args[1 ..^ 1])
   of "nearest": cmdNearest(args[1 ..^ 1])
+  of "mermaid": cmdMermaid(args[1 ..^ 1])
+  of "predict": cmdPredict(args[1 ..^ 1])
+  of "project": cmdProject(args[1 ..^ 1])
   else:
     echo GeneralHelp
     die("unknown command: " & args[0])
