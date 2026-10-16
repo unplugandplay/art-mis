@@ -430,3 +430,46 @@ self-adversarial negative sampling, and (d) use a non-hinge objective so trainin
 does not freeze once the margin is met. Any of those needs its own FB15k check
 before it can claim to improve the model rather than the appearance of its
 scores.
+
+## D27 — Calibration is fitted, stored in the model, and never guessed
+
+**Decision.** `artemis calibrate --model ckpt --data valid.tsv` fits one
+temperature τ by minimising the negative log-likelihood of the true tail over a
+deterministic subsample of held-out triples (log-spaced grid + local refinement),
+stores it in the checkpoint (`TransEModel.temperature`, format v2) and prints the
+NLL before/after. `predict --probabilities` reads it; `--temperature F` overrides;
+without either, `predict` refuses rather than inventing a number.
+
+**Context.** A TransE score is a ranking device on an uncalibrated scale (D26),
+so `Erin 12.82485` vs `Frank 14.16890` says nothing about confidence. The
+standard remedy is temperature scaling, but the temperature has to come from data
+— a hand-picked τ would just be a different arbitrary scale.
+
+**Consequence.** The demo's two distances become `p=0.9832` / `p=0.0135` from a
+τ fitted on the graph; on FB15k-237, calibrated on the held-out valid split, the
+NLL of the true tail falls 6.18 → 4.90 nats with a mean probability of 8.9 % —
+which is what filtered MRR 0.289 looks like across 14,505 candidates. The fitted
+τ is *below* 1 in both cases (0.31, 0.48): because the raw scale is inflated
+(D26), the correction is to sharpen, not to soften — a nice confirmation that the
+diagnosis and the fix agree. Checkpoint v2 appends 4 bytes after `seed`; v1 files
+still load with τ = 0 (uncalibrated), tested by splicing a v2 file back to v1.
+
+## D28 — Self-adversarial negatives are scale-free and opt-in
+
+**Decision.** `--adv-alpha F` weights the negatives drawn for each positive by
+`softmax(-α · z)` where `z` is the group-standardised distance, rescaled to average
+1. `α = 0` (default) is the plain loop; the flag needs `--neg ≥ 2`.
+
+**Context.** RotatE (2019) exponentiates raw scores, but a TransE distance is
+unbounded — `exp(-α·d)` underflows immediately on FB15k (d ~ 10²) — so the
+adaptation is to standardise within the sampled group and keep α dimensionless.
+Rescaling to average 1 keeps the total step size identical to the unweighted loop,
+which is what makes `α = 0` *bit-identical* rather than merely similar.
+
+**Consequence.** Both properties are tested (uniform at α = 0, weights averaging
+one, monotone in α and in hardness, no-op with one negative, deterministic, and
+bit-identical to the plain loop at α = 0). On FB15k-237 the measured effect is
+small (see DevLog session 9) and costs ~4× the training time at `--neg 5`, so it
+stays opt-in: the honest summary is that the extra negatives, not the adversarial
+weighting, account for most of the difference — which is exactly why the control
+run is in the DevLog next to it.

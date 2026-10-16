@@ -5,6 +5,7 @@ import ./types
 import ./gradients
 import ./sampling
 import ./evaluate
+import ./scoring
 import ./persist
 
 proc rawCopySeq(t: Tensor[float32]): seq[float32] =
@@ -26,6 +27,37 @@ proc weightedDraw(rng: var Rand, cumulative: openArray[float64],
     if cumulative[mid] <= u: lo = mid + 1
     else: hi = mid
   result = lo
+
+proc adversarialWeights*(dists: openArray[float32],
+                         alpha: float32): seq[float32] =
+  ## RotatE-style self-adversarial weights for the negatives drawn for one
+  ## positive: harder negatives (smaller distance) get more of the push.
+  ##
+  ## RotatE exponentiates the raw score, but our dissimilarity is unbounded (a
+  ## relation vector can inflate every distance), so the group is standardised
+  ## first and `alpha` is dimensionless: 0 is exactly uniform, larger values
+  ## concentrate on the hardest of the sampled negatives. The weights average
+  ## 1, so the total step size matches the unweighted loop.
+  let n = dists.len
+  result = newSeq[float32](n)
+  if n == 0: return
+  for i in 0 ..< n: result[i] = 1.0'f32
+  if alpha <= 0.0'f32: return
+  var mean = 0.0'f32
+  for d in dists: mean += d
+  mean /= n.float32
+  var varSum = 0.0'f32
+  for d in dists: varSum += (d - mean) * (d - mean)
+  let sd = sqrt(varSum / n.float32)
+  if sd <= 1e-6'f32: return # all negatives equally hard: stay uniform
+  var total = 0.0'f32
+  for i in 0 ..< n:
+    result[i] = exp(-alpha * (dists[i] - mean) / sd)
+    total += result[i]
+  if total <= 0.0'f32:
+    for i in 0 ..< n: result[i] = 1.0'f32
+    return
+  for i in 0 ..< n: result[i] = result[i] * n.float32 / total
 
 proc weightFactors(hp: HyperParams, weights: seq[float32]): seq[float32] =
   ## Per-edge multiplier for `wmStep`: weights are raised to `hp.weightPower`
@@ -80,6 +112,29 @@ type
     stoppedEarly*: bool
     epochsRun*: int
 
+proc stepNegatives(m: var TransEModel, pos: Triple, sampler: Sampler,
+                   rng: var Rand, hp: HyperParams, scratch: var StepScratch,
+                   adversarial: bool): float32 =
+  ## One positive's worth of negative updates. With `adversarial` the drawn
+  ## negatives are re-weighted by `adversarialWeights` (and the *same* draws
+  ## happen either way, so `advAlpha = 0` is bit-identical to the plain loop).
+  if hp.negPerPos <= 1 or not adversarial:
+    for _ in 0 ..< hp.negPerPos:
+      let neg = sampler.sample(rng, pos)
+      result += trainStep(m, pos, neg, hp, scratch)
+    return
+  var negs = newSeqOfCap[Triple](hp.negPerPos)
+  var dists = newSeqOfCap[float32](hp.negPerPos)
+  for _ in 0 ..< hp.negPerPos:
+    let neg = sampler.sample(rng, pos)
+    negs.add neg
+    dists.add distance(m, neg, hp.norm)
+  let weights = adversarialWeights(dists, hp.advAlpha)
+  for j in 0 ..< negs.len:
+    var whp = hp
+    whp.lr = hp.lr * weights[j]
+    result += trainStep(m, pos, negs[j], whp, scratch)
+
 proc train*(m: var TransEModel, trainData: seq[Triple], sampler: Sampler,
             hp: HyperParams, valid: seq[Triple] = @[],
             truth: HashSet[Triple] = initHashSet[Triple](),
@@ -116,6 +171,7 @@ proc train*(m: var TransEModel, trainData: seq[Triple], sampler: Sampler,
   let weighted = hp.useWeights and weights.len == trainData.len and
                  weights.len > 0 and nonUnit
   let sampling = weighted and hp.weightMode == wmSample
+  let adversarial = hp.advAlpha > 0.0'f32 and hp.negPerPos > 1
   var cumulative: seq[float64]
   var totalWeight = 0.0
   var factors: seq[float32]
@@ -144,9 +200,7 @@ proc train*(m: var TransEModel, trainData: seq[Triple], sampler: Sampler,
       # therefore the wall clock) matches the unweighted loop.
       for _ in 0 ..< trainData.len:
         let pos = trainData[weightedDraw(rng, cumulative, totalWeight)]
-        for _ in 0 ..< hp.negPerPos:
-          let neg = sampler.sample(rng, pos)
-          epochLoss += trainStep(m, pos, neg, ehp, scratch)
+        epochLoss += stepNegatives(m, pos, sampler, rng, ehp, scratch, adversarial)
     elif factors.len > 0:
       # Step mode: shuffle *positions* so each edge keeps its own weight, and
       # scale that edge's step. With every weight equal to 1 the factors are
@@ -162,18 +216,15 @@ proc train*(m: var TransEModel, trainData: seq[Triple], sampler: Sampler,
           let oi = orderIdx[i]
           var whp = ehp
           whp.lr = ehp.lr * factors[oi]
-          for _ in 0 ..< hp.negPerPos:
-            let neg = sampler.sample(rng, order[oi])
-            epochLoss += trainStep(m, order[oi], neg, whp, scratch)
+          epochLoss += stepNegatives(m, order[oi], sampler, rng, whp, scratch,
+                                     adversarial)
     else:
       rng.shuffle(order)
       for bStart in countup(0, order.len - 1, hp.batchSize):
         let bEnd = min(bStart + hp.batchSize, order.len)
         for i in bStart ..< bEnd:
-          let pos = order[i]
-          for _ in 0 ..< hp.negPerPos:
-            let neg = sampler.sample(rng, pos)
-            epochLoss += trainStep(m, pos, neg, ehp, scratch)
+          epochLoss += stepNegatives(m, order[i], sampler, rng, ehp, scratch,
+                                     adversarial)
     let meanLoss = epochLoss / (order.len * hp.negPerPos).float64
 
     var mrr = NaN

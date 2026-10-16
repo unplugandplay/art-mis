@@ -4,7 +4,7 @@
 import std/[tables, hashes]
 import arraymancer
 
-const ArtemisVersion* = "0.5.1"
+const ArtemisVersion* = "0.6.0"
   ## Keep in sync with `version` in `artemis.nimble` (and the release tag);
   ## `artemis --version` prints it, so a built binary is self-identifying.
 
@@ -70,6 +70,7 @@ type
     quiet*: bool = false
     threads*: int = 1     ## evaluation worker threads (0 = one per core)
     useWeights*: bool = true       ## honour a weight column when present
+    advAlpha*: float32 = 0.0       ## self-adversarial negative weighting; 0 = off
     weightMode*: WeightMode = wmSample
     weightPower*: float32 = 1.0    ## weights are raised to this power first
     weightNorm*: WeightNorm = wnMean
@@ -80,6 +81,7 @@ type
     entities*, relations*: Vocab
     entityEmb*: Tensor[float32] ## [nEntities, dim]
     relEmb*: Tensor[float32]    ## [nRelations, dim]
+    temperature*: float32       ## score-calibration temperature; 0 = uncalibrated
 
 proc `$`*(m: WeightMode): string =
   case m

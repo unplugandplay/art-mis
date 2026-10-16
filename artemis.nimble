@@ -1,5 +1,5 @@
 # Package
-version       = "0.5.1"
+version       = "0.6.0"
 author        = "unplugandplay"
 description   = "Artemis — TransE knowledge-graph embeddings in Nim"
 license       = "MIT"

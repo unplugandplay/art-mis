@@ -241,6 +241,7 @@ filtered metrics use all splits as the known-truth set; standalone `eval` needs
 | `--weight-power F` | 1.0 | raise weights to this power; `0` ignores them |
 | `--weight-norm N` | mean | `mean` or `max` scaling for `step` mode |
 | `--no-weights` | off | ignore a weight column entirely |
+| `--adv-alpha F` | 0 (off) | self-adversarial negative weighting (needs `--neg ≥ 2`) |
 | `--threads N` | 1 | evaluation workers (0 = one per core; training stays serial) |
 | `--valid` / `--test` | — | extra splits (truth set + metrics) |
 | `--out DIR` | . | checkpoints, `embeddings.tsv`, `vocab.json` |
@@ -256,6 +257,7 @@ artemis nearest --model checkpoint.bin --entity NAME [--k 10] [--metric cosine|l
 artemis mermaid FILE.mmd [--out triples.tsv] [--default-rel R] [--group-rel R]
 artemis predict --model checkpoint.bin --rel NAME (--head NAME | --tail NAME) [--k 10]
 artemis project --model checkpoint.bin [--out DIR]
+artemis calibrate --model checkpoint.bin --data valid.tsv [--out checkpoint.bin]
 artemis --version
 ```
 
@@ -288,6 +290,8 @@ anything else is reported on stderr — a diagram with one odd line still conver
 | `--filter F[,F...]` | — | drop candidates already true in these files |
 | `--allow-self` | off | also propose the entity you already named |
 | `--candidates F[,F...]` | — | only propose values this relation is seen with |
+| `--probabilities` | off | print calibrated probabilities (needs a calibrated model) |
+| `--temperature F` | model's τ | override the calibration temperature |
 
 Ranks candidates by `d(h, r, ·)` (with `--head`) or `d(·, r, t)` (with `--tail`),
 best first, using the norm stored in the checkpoint. Distances are the
@@ -342,12 +346,44 @@ difference is a ripple on that offset. This is why the 2013 paper evaluates by
 **rank**, and why `predict` prints a ranking rather than a confidence.
 
 Contrast can be widened — on the bundled demo `--margin 5 --neg 10` lifts the
-relative gap from 8.7 % to 19.1 % and the top-two odds from 3.8× to 19× — but
-contrast is not accuracy: the same `--margin 5` on FB15k-237 *lowers* filtered
-MRR from 0.289 to 0.268 (Hits@10 0.453 → 0.425). The defaults stay at the paper's
-margin 1 so the reference numbers here remain comparable; `DevLog.md` session 8
-has the full table and the literature options (self-adversarial negatives,
-BCE/softplus losses, TransH/R/D/A relation spaces, temperature calibration).
+relative gap from 8.7 % to 19.1 % — but contrast is not accuracy: the same
+`--margin 5` on FB15k-237 *lowers* filtered MRR from 0.289 to 0.268. So the
+defaults stay at the paper's margin 1, and the two honest fixes ship as separate,
+opt-in tools:
+
+**Calibrated probabilities.** `artemis calibrate` fits a single temperature τ on
+held-out triples (minimising the negative log-likelihood of the true tail) and
+stores it in the checkpoint; `predict --probabilities` then reports a real
+probability per candidate:
+
+```sh
+artemis calibrate --model out/artemis_checkpoint.bin --data out/company.tsv \
+  --out out/company_calibrated.bin
+artemis predict --model out/company_calibrated.bin --head Dave --rel spouseOf \
+  --k 3 --probabilities
+```
+
+```
+top 3 tails for (Dave, spouseOf, ?)  [calibrated, tau=0.3133]
+Erin                                 12.82485   p=0.9832
+Frank                                14.16890   p=0.0135
+Sales                                14.80359   p=0.0018
+```
+
+Same model, same ordering — 98 % against 1.4 % instead of two distances 1.3
+apart. The fitted τ is *below* 1 (0.31 here, 0.48 on FB15k-237) precisely because
+the raw scale is inflated: the correction sharpens. On FB15k-237, calibrated on
+the held-out valid split, the NLL of the true tail drops 6.18 → 4.90 nats and the
+true tail averages 8.9 % probability — which is what a filtered MRR of 0.29 looks
+like over 14,505 candidates.
+
+**Self-adversarial negatives.** `--adv-alpha F` re-weights the negatives drawn for
+each positive so the *hardest* of them gets most of the push (RotatE, 2019).
+Because a TransE distance is unbounded, the group is standardised first, which
+makes α dimensionless: 0 is exactly the plain loop (bit-identical), larger values
+concentrate on the nearest miss. It needs `--neg ≥ 2` and leaves the total step
+size unchanged (the weights average 1). Measured on FB15k-237 in `DevLog.md`
+session 9.
 
 Implementation: the known-true tails of each `(h, r)` and heads of each `(r, t)`
 are indexed once and flattened into per-triple candidate lists, so the filtered
@@ -393,7 +429,12 @@ scripts/get_data.sh
 
 That matches published, tuned TransE baselines on FB15k-237 (filtered MRR ≈ 0.29
 / Hits@10 ≈ 0.46), and validation MRR rose monotonically across all ten evals
-(0.196 → 0.289) — the budget, not the model, is still the limit.
+(0.196 → 0.289) — the budget, not the model, is still the limit. Adding negatives
+is worth more than anything else measured so far: the same recipe with `--neg 5`
+reaches **filtered MRR 0.338 / Hits@10 0.506** in 12 minutes (see the table
+below), while self-adversarial re-weighting of those same negatives gives the gain back
+(mildly at α = 0.25, entirely at α = 1) — `DevLog.md` session 9 has the four-way
+ablation and why.
 
 ### Getting there: budget and learning-rate schedule
 
@@ -403,6 +444,7 @@ dim 100, margin 1.0, Bernoulli sampling and seed; only budget and schedule move:
 
 | run | filtered MRR | Hits@10 | wall (`--threads 0`) |
 |---|---|---|---|
+| 1000 epochs, linear, **`--neg 5`** | **0.338** | **0.506** | 12m04s |
 | 200 epochs, constant lr | 0.207 | 0.343 | 2m01s |
 | 500 epochs, constant lr | 0.218 | 0.364 | 2m38s |
 | 500 epochs, exponential 0.99 → 1e-4 | 0.245 | 0.389 | 2m41s |

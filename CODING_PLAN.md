@@ -214,6 +214,9 @@ with `numpy` without errors (script in `scripts/check_export.py`).
 - [x] `nearest`: cosine / Euclidean over entity rows, top-k print.
 - [x] v0.3.0 companions: `mermaid` (diagram → triples, D20), `predict`
   (link-prediction queries, D21), `project` (PCA projection + SVG, D22).
+- [x] v0.6.0 calibration + adversarial negatives: `artemis calibrate` /
+  `predict --probabilities` (D27, checkpoint v2) and `--adv-alpha` self-
+  adversarial weighting (D28).
 - [x] v0.5.0 node payload: `key: value` shape lines, ER/class members,
   state descriptions, `Start`/`End` pseudo-states (D24), plus
   `predict --candidates` relation value sets (D25).

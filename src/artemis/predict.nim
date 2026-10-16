@@ -3,7 +3,7 @@
 ##
 ## This is the query side of `evaluate`: same scoring, same "lower is better"
 ## dissimilarity, but it returns the ranking instead of aggregate metrics.
-import std/[algorithm, sets]
+import std/[algorithm, sets, math]
 import ./types
 import ./scoring
 
@@ -11,10 +11,13 @@ type
   Prediction* = object
     entity*: int     ## predicted entity id (index into the vocab)
     score*: float32  ## dissimilarity d(h, r, ?) / d(?, r, t); lower is better
+    prob*: float64   ## temperature-scaled softmax over *all* eligible
+                     ## candidates; 0 when no temperature was supplied
 
 proc rankCandidates(scores: seq[float32], k: int, rel, fixed: int,
                     tailSide: bool, truth: HashSet[Triple],
-                    skipSelf: bool, restrict: HashSet[int]): seq[Prediction] =
+                    skipSelf: bool, restrict: HashSet[int],
+                    temperature: float32): seq[Prediction] =
   ## Best-first candidates. When `skipSelf` is on, the entity the caller already
   ## named is not proposed as its own answer (`Alice manages Alice`); this is
   ## the query-side analogue of `evaluate`, which never counts the true entity
@@ -39,25 +42,42 @@ proc rankCandidates(scores: seq[float32], k: int, rel, fixed: int,
     else: a - b) # stable, deterministic tie-break by id
   let n = min(k, candidates.len)
   result = newSeqOfCap[Prediction](n)
+  # The probability denominator is every eligible candidate, not just the ones
+  # we print — otherwise the numbers would depend on --k.
+  var lo = 0.0'f32
+  var z = 0.0
+  if temperature > 0.0'f32 and candidates.len > 0:
+    lo = scores[candidates[0]]
+    for c in candidates: lo = min(lo, scores[c])
+    for c in candidates:
+      z += exp(-(scores[c].float64 - lo.float64) / temperature.float64)
   for i in 0 ..< n:
-    result.add Prediction(entity: candidates[i], score: scores[candidates[i]])
+    var p = 0.0
+    if z > 0.0:
+      p = exp(-(scores[candidates[i]].float64 - lo.float64) /
+              temperature.float64) / z
+    result.add Prediction(entity: candidates[i], score: scores[candidates[i]],
+                          prob: p)
 
 proc predictTails*(v: EmbeddingView, head, rel, k: int,
                    truth: HashSet[Triple] = initHashSet[Triple](),
                    allowSelf = false,
-                   restrict: HashSet[int] = initHashSet[int]()): seq[Prediction] =
-  ## Top-`k` tails for `(head, rel, ?)`, best first.
+                   restrict: HashSet[int] = initHashSet[int](),
+                   temperature = 0.0'f32): seq[Prediction] =
+  ## Top-`k` tails for `(head, rel, ?)`, best first. `temperature > 0` also
+  ## fills `prob` with the calibrated probability of each candidate.
   var sb = initScoreBoard(v)
   scoreAllTails(v, sb, head, rel)
   rankCandidates(sb.scores, k, rel, head, tailSide = true, truth,
-                 skipSelf = not allowSelf, restrict)
+                 skipSelf = not allowSelf, restrict, temperature)
 
 proc predictHeads*(v: EmbeddingView, rel, tail, k: int,
                    truth: HashSet[Triple] = initHashSet[Triple](),
                    allowSelf = false,
-                   restrict: HashSet[int] = initHashSet[int]()): seq[Prediction] =
-  ## Top-`k` heads for `(?, rel, tail)`, best first.
+                   restrict: HashSet[int] = initHashSet[int](),
+                   temperature = 0.0'f32): seq[Prediction] =
+  ## Top-`k` heads for `(?, rel, tail)`, best first. See `predictTails`.
   var sb = initScoreBoard(v)
   scoreAllHeads(v, sb, rel, tail)
   rankCandidates(sb.scores, k, rel, tail, tailSide = false, truth,
-                 skipSelf = not allowSelf, restrict)
+                 skipSelf = not allowSelf, restrict, temperature)

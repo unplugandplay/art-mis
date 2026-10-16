@@ -86,3 +86,43 @@ suite "predict: candidate restriction":
                              restrict = restrict)
     check preds.len == 1
     check preds[0].entity == 2
+
+suite "predict: calibrated probabilities":
+  let v = view(m)
+
+  test "no temperature means no probabilities":
+    for p in predictTails(v, head = 0, rel = 0, k = 3):
+      check p.prob == 0.0
+
+  test "probabilities follow the scores and sum to one":
+    let preds = predictTails(v, head = 0, rel = 0, k = 1, allowSelf = true,
+                             temperature = 1.0'f32)
+    check preds.len == 1
+    # the denominator is every eligible candidate (e0, e1, e2), not just the
+    # printed one, which shares the mass with e0 and e2
+    check preds[0].prob > 0.0 and preds[0].prob < 1.0
+    let all3 = predictTails(v, head = 0, rel = 0, k = 3, allowSelf = true,
+                            temperature = 1.0'f32)
+    var total = 0.0
+    for p in all3: total += p.prob
+    check abs(total - 1.0) < 1e-9
+    check all3[0].prob > all3[1].prob
+    # e0 and e2 score identically for this query, so they must tie exactly
+    check abs(all3[1].prob - all3[2].prob) < 1e-15
+
+  test "restriction and filtering shrink the denominator":
+    var restrict = initHashSet[int]()
+    restrict.incl 1
+    restrict.incl 2
+    let preds = predictTails(v, head = 0, rel = 0, k = 2, restrict = restrict,
+                             temperature = 1.0'f32, allowSelf = true)
+    var total = 0.0
+    for p in preds: total += p.prob
+    check abs(total - 1.0) < 1e-9   # only e1 and e2 are eligible
+
+  test "a sharper temperature concentrates the mass":
+    let soft = predictTails(v, head = 0, rel = 0, k = 1, allowSelf = true,
+                            temperature = 100.0'f32)
+    let sharp = predictTails(v, head = 0, rel = 0, k = 1, allowSelf = true,
+                             temperature = 0.01'f32)
+    check sharp[0].prob > soft[0].prob

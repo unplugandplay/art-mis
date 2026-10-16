@@ -199,3 +199,63 @@ suite "train: weighted graphs":
     check d1Heavy < d0Light
     check d0Heavy < d0Light
     check d1Heavy < d1Light
+
+suite "train: self-adversarial negatives":
+  test "alpha 0 is exactly uniform, whatever the distances":
+    let w = adversarialWeights(@[1.0'f32, 5.0, 9.0], 0.0'f32)
+    check w == @[1.0'f32, 1.0'f32, 1.0'f32]
+
+  test "weights average one, so the total step size is unchanged":
+    for alpha in [0.5'f32, 1.0'f32, 4.0'f32]:
+      let w = adversarialWeights(@[1.0'f32, 5.0, 9.0], alpha)
+      var total = 0.0'f32
+      for x in w: total += x
+      check abs(total - 3.0'f32) < 1e-4'f32
+
+  test "harder negatives (smaller distance) get more weight":
+    let w = adversarialWeights(@[1.0'f32, 5.0, 9.0], 1.0'f32)
+    check w[0] > w[1] and w[1] > w[2]
+
+  test "a larger alpha concentrates on the hardest negative":
+    let w = adversarialWeights(@[1.0'f32, 5.0, 9.0], 1.0'f32)
+    let sharp = adversarialWeights(@[1.0'f32, 5.0, 9.0], 6.0'f32)
+    check sharp[0] > w[0]
+    check sharp[2] < w[2]
+
+  test "identical distances stay uniform (nothing to prefer)":
+    check adversarialWeights(@[3.0'f32, 3.0, 3.0], 2.0'f32) ==
+          @[1.0'f32, 1.0'f32, 1.0'f32]
+
+  test "an empty group is empty":
+    check adversarialWeights(@[], 1.0'f32).len == 0
+
+  proc trainToyAdv(alpha: float32, negs: int): seq[float32] =
+    var hp = HyperParams(dim: 10, epochs: 120, lr: 0.05'f32, norm: nkL1,
+                         quiet: true, seed: 42, negPerPos: negs,
+                         advAlpha: alpha)
+    let (data, ents, rels, _) = loadDataset("data/toy_family.tsv", hp)
+    var rng = initRand(42)
+    var m = initModel(ents, rels, hp, rng)
+    let truth = buildTruthSet(data.train)
+    let sampler = initSampler(data.train, rels.len, ents.len, true, truth)
+    discard train(m, data.train, sampler, hp)
+    rawCopy(m.entityEmb)
+
+  test "advAlpha 0 reproduces the plain loop bit for bit (even with 3 negatives)":
+    check trainToyAdv(0.0'f32, 3) == trainToyAdv(0.0'f32, 3)
+    var plain = HyperParams(dim: 10, epochs: 120, lr: 0.05'f32, norm: nkL1,
+                            quiet: true, seed: 42, negPerPos: 3)
+    let (data, ents, rels, _) = loadDataset("data/toy_family.tsv", plain)
+    var rng = initRand(42)
+    var m = initModel(ents, rels, plain, rng)
+    let truth = buildTruthSet(data.train)
+    let sampler = initSampler(data.train, rels.len, ents.len, true, truth)
+    discard train(m, data.train, sampler, plain)
+    check rawCopy(m.entityEmb) == trainToyAdv(0.0'f32, 3)
+
+  test "a positive alpha changes the fit, deterministically":
+    check trainToyAdv(1.0'f32, 3) != trainToyAdv(0.0'f32, 3)
+    check trainToyAdv(1.0'f32, 3) == trainToyAdv(1.0'f32, 3)
+
+  test "one negative leaves the weighting with nothing to do":
+    check trainToyAdv(2.0'f32, 1) == trainToyAdv(0.0'f32, 1)

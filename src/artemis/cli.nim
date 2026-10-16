@@ -12,6 +12,7 @@ import ./scoring
 import ./mermaid
 import ./predict
 import ./project
+import ./calibrate
 
 const GeneralHelp = """
 artemis — TransE knowledge-graph embeddings in Nim
@@ -24,6 +25,7 @@ Usage:
   artemis mermaid FILE.mmd [--out triples.tsv] [--default-rel R] [--group-rel R]
   artemis predict --model checkpoint.bin --rel NAME (--head NAME | --tail NAME) [--k 10]
   artemis project --model checkpoint.bin [--out DIR]
+  artemis calibrate --model checkpoint.bin --data valid.tsv [--out checkpoint.bin]
   artemis --version
 
 Train options:
@@ -46,6 +48,8 @@ Train options:
   --weight-power F raise weights to this power    (default 1.0; 0 ignores)
   --weight-norm N  mean | max  (step mode scaling)(default mean)
   --no-weights     ignore a weight column entirely
+  --adv-alpha F    self-adversarial negative weighting (RotatE-style, 0 = off)
+                   needs --neg > 1; scale-free, larger = harder negatives
   --threads N      eval worker threads            (default 1; 0 = one per core)
   --delimiter CH   tab | comma | space | other    (default tab)
   --out DIR        output directory               (default .)
@@ -63,6 +67,12 @@ Mermaid options:
   --default-rel R  relation for unlabelled edges  (default relatedTo)
   --group-rel R    relation for subgraph members  (default inGroup)
 
+Calibrate options:
+  --data FILE      held-out triples to fit the temperature on
+  --sample N       triples to use                    (default 500)
+  --out FILE       where to save the calibrated model (default: --model)
+  --quiet          no summary
+
 Query options (predict):
   --head NAME      rank tails for (head, rel, ?)
   --tail NAME      rank heads for (?, rel, tail)
@@ -70,6 +80,8 @@ Query options (predict):
   --k N            how many candidates to print   (default 10)
   --filter F[,F...] drop candidates already true in these files
   --candidates F[,F...] only propose values this relation is seen with
+  --probabilities  print calibrated probabilities (needs `artemis calibrate`)
+  --temperature F  override the model's calibration temperature
   --allow-self     also propose the entity you named (off by default)
 
 Project options:
@@ -93,7 +105,7 @@ proc parseDelim(s: string): char =
 
 const flagKeys = ["quiet", "bern", "no-bern", "help", "allow-self",
                   "no-relations", "no-labels", "no-weights",
-                  "no-weight-labels", "no-payload"]
+                  "no-weight-labels", "no-payload", "probabilities"]
 
 proc collectOpts(args: seq[string]): tuple[opts: Table[string, string],
                                            flags: Table[string, bool],
@@ -155,6 +167,7 @@ proc cmdTrain(args: seq[string]) =
   hp.ckptEvery = opts.optInt("ckpt-every", 0)
   hp.minCount = opts.optInt("min-count", 1)
   hp.weightPower = opts.optF32("weight-power", hp.weightPower)
+  hp.advAlpha = opts.optF32("adv-alpha", hp.advAlpha)
   hp.useWeights = "no-weights" notin flags
   hp.threads = opts.optThreads()
   hp.quiet = "quiet" in flags
@@ -180,6 +193,10 @@ proc cmdTrain(args: seq[string]) =
               " (expected mean|max)")
   if hp.weightPower < 0:
     die("--weight-power must be >= 0")
+  if hp.advAlpha < 0:
+    die("--adv-alpha must be >= 0")
+  if hp.advAlpha > 0 and hp.negPerPos < 2:
+    die("--adv-alpha needs --neg 2 or more (it re-weights the drawn negatives)")
   if "lr-schedule" in opts:
     case opts["lr-schedule"].toLowerAscii
     of "constant", "none", "off": hp.lrSchedule = lsConstant
@@ -216,6 +233,8 @@ proc cmdTrain(args: seq[string]) =
     stderr.writeLine "weights: ignored (--weight-power 0)"
   elif data.weights.len > 0:
     stderr.writeLine "weights: none in effect (no column, or every value 1.0) - unweighted run"
+  if hp.advAlpha > 0:
+    stderr.writeLine &"negatives: {hp.negPerPos} per positive, self-adversarial alpha={hp.advAlpha}"
   if hp.lrSchedule != lsConstant:
     var desc = &"lr schedule: {$hp.lrSchedule}  lr={hp.lr}  min={hp.lrMin}"
     if hp.lrSchedule == lsExponential:
@@ -397,6 +416,15 @@ proc cmdPredict(args: seq[string]) =
   if "filter" in opts:
     truth = loadTruthFiles(opts["filter"], hp.delimiter, model)
   let allowSelf = "allow-self" in flags
+  var temperature = 0.0'f32
+  if "probabilities" in flags:
+    temperature = if "temperature" in opts: opts.optF32("temperature", 0.0'f32)
+                  else: model.temperature
+    if temperature <= 0.0'f32:
+      die("this model has no calibration temperature; run `artemis calibrate` " &
+          "or pass --temperature F")
+  elif "temperature" in opts:
+    temperature = opts.optF32("temperature", 0.0'f32)
   # `--candidates FILE`: keep a relation's answers to the values it is actually
   # seen with, so a `role` question cannot answer with an age literal.
   var restrict = initHashSet[int]()
@@ -415,22 +443,30 @@ proc cmdPredict(args: seq[string]) =
     let headName = opts["head"]
     if headName notin model.entities.toId: die("unknown entity: " & headName)
     let preds = predictTails(v, model.entities.toId[headName], rel, k, truth,
-                             allowSelf, restrict)
+                             allowSelf, restrict, temperature)
     echo &"top {preds.len} tails for ({headName}, {relName}, ?)" &
          (if truth.len > 0: &"  [{truth.len} known triples filtered]" else: "") &
-         (if restrict.len > 0: &"  [candidates: {restrict.len} known {relName} values]" else: "")
+         (if restrict.len > 0: &"  [candidates: {restrict.len} known {relName} values]" else: "") &
+         (if temperature > 0.0'f32: &"  [calibrated, tau={temperature:.4g}]" else: "")
     for p in preds:
-      echo &"{model.entities.names[p.entity]:<34} {p.score:10.5f}"
+      if temperature > 0.0'f32:
+        echo &"{model.entities.names[p.entity]:<34} {p.score:10.5f}   p={p.prob:.4f}"
+      else:
+        echo &"{model.entities.names[p.entity]:<34} {p.score:10.5f}"
   else:
     let tailName = opts["tail"]
     if tailName notin model.entities.toId: die("unknown entity: " & tailName)
     let preds = predictHeads(v, rel, model.entities.toId[tailName], k, truth,
-                             allowSelf, restrict)
+                             allowSelf, restrict, temperature)
     echo &"top {preds.len} heads for (?, {relName}, {tailName})" &
          (if truth.len > 0: &"  [{truth.len} known triples filtered]" else: "") &
-         (if restrict.len > 0: &"  [candidates: {restrict.len} known {relName} values]" else: "")
+         (if restrict.len > 0: &"  [candidates: {restrict.len} known {relName} values]" else: "") &
+         (if temperature > 0.0'f32: &"  [calibrated, tau={temperature:.4g}]" else: "")
     for p in preds:
-      echo &"{model.entities.names[p.entity]:<34} {p.score:10.5f}"
+      if temperature > 0.0'f32:
+        echo &"{model.entities.names[p.entity]:<34} {p.score:10.5f}   p={p.prob:.4f}"
+      else:
+        echo &"{model.entities.names[p.entity]:<34} {p.score:10.5f}"
 
 proc cmdProject(args: seq[string]) =
   let (opts, flags, _) = collectOpts(args)
@@ -446,6 +482,33 @@ proc cmdProject(args: seq[string]) =
   stderr.writeLine &"projected {p.points.len} vectors to 2D " &
                    &"(variance captured: {p.var1:.4g} / {p.var2:.4g})"
   stderr.writeLine "wrote " & (outDir / "map.svg") & " and " & (outDir / "projection.tsv")
+
+proc cmdCalibrate(args: seq[string]) =
+  let (opts, flags, _) = collectOpts(args)
+  if "model" notin opts or "data" notin opts:
+    die("calibrate requires --model PATH --data valid.tsv")
+  let (model, hp) = loadCheckpoint(opts["model"])
+  let dataPath = opts["data"]
+  var malformed, skipped = 0
+  let data = toTriples(loadRawTriples(dataPath, hp.delimiter, malformed),
+                       model.entities, model.relations, skipped)
+  if data.len == 0: die("no usable triples in " & dataPath)
+  if skipped > 0:
+    stderr.writeLine &"warning: skipped {skipped} triples with unknown names"
+  var v = view(model)
+  v.norm = hp.norm
+  let sample = opts.optInt("sample", 500)
+  let cal = fitTemperature(v, data, limit = sample)
+  var m = model
+  m.temperature = cal.temperature
+  let outPath = opts.getOrDefault("out", opts["model"])
+  saveCheckpoint(m, hp, outPath)
+  if "quiet" notin flags:
+    stderr.writeLine &"calibrated on {cal.n} triples from {dataPath}"
+    stderr.writeLine &"temperature: tau={cal.temperature:.4g}  " &
+                     &"NLL {cal.nllUnit:.4f} -> {cal.nll:.4f}  " &
+                     &"(mean probability of the true tail: {cal.meanProb:.3f})"
+    stderr.writeLine "model: " & outPath
 
 proc main*() =
   let args = commandLineParams()
@@ -463,6 +526,7 @@ proc main*() =
   of "mermaid": cmdMermaid(args[1 ..^ 1])
   of "predict": cmdPredict(args[1 ..^ 1])
   of "project": cmdProject(args[1 ..^ 1])
+  of "calibrate": cmdCalibrate(args[1 ..^ 1])
   else:
     echo GeneralHelp
     die("unknown command: " & args[0])

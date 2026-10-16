@@ -61,3 +61,44 @@ suite "persist: TSV / JSON export":
     check j["dim"].getInt == 3
     check j["entities"].getElems.len == 2
     check j["hyperparams"]["seed"].getInt == 5
+
+suite "persist: calibration temperature":
+  test "a calibrated model round-trips, an uncalibrated one stays 0":
+    var rng = initRand(7)
+    let hp = HyperParams(dim: 4)
+    let (ents, rels) = (makeVocab(@["a", "b"]), makeVocab(@["r"]))
+    var m = initModel(ents, rels, hp, rng)
+    m.temperature = 2.5'f32
+    let path = getTempDir() / "artemis_test_calib.bin"
+    saveCheckpoint(m, hp, path)
+    let (back, _) = loadCheckpoint(path)
+    check back.temperature == 2.5'f32
+    check rawCopy(back.entityEmb) == rawCopy(m.entityEmb)
+    var plain = initModel(ents, rels, hp, rng)
+    saveCheckpoint(plain, hp, path)
+    check loadCheckpoint(path).m.temperature == 0.0'f32 # 0 = uncalibrated
+
+  test "a v1 checkpoint (no temperature field) still loads":
+    # v2 only appends 4 bytes after `seed`; splicing them out of a v2 file
+    # gives a byte-exact v1 file.
+    var rng = initRand(9)
+    let hp = HyperParams(dim: 3)
+    let (ents, rels) = (makeVocab(@["x", "y"]), makeVocab(@["r"]))
+    var m = initModel(ents, rels, hp, rng)
+    m.temperature = 1.75'f32
+    let path = getTempDir() / "artemis_test_v2.bin"
+    let v1path = getTempDir() / "artemis_test_v1.bin"
+    saveCheckpoint(m, hp, path)
+    var raw = readFile(path)
+    # v1 is exactly v2 minus the 4 temperature bytes that follow `seed`.
+    const tempOffset = 8 + 4 + 4 + 4 + 4 + 1 + 1 + 4 + 4 + 8
+    raw[8] = char(1) # little-endian version = 1
+    raw[9] = char(0)
+    raw[10] = char(0)
+    raw[11] = char(0)
+    raw = raw[0 ..< tempOffset] & raw[tempOffset + 4 .. ^1]
+    writeFile(v1path, raw)
+    let (back, hp2) = loadCheckpoint(v1path)
+    check back.temperature == 0.0'f32
+    check back.entities.names == m.entities.names
+    check rawCopy(back.relEmb) == rawCopy(m.relEmb)

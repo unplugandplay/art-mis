@@ -589,3 +589,100 @@ margin is met), and calibrated reporting (turn a rank into an honest
 probability). Each would need its own FB15k check before becoming a default, and
 this session's lesson is that a demo-sized contrast win predicts nothing about
 the rank metrics.
+
+---
+
+## Session 9 — the two fixes from session 8, implemented and checked
+
+Session 8 concluded that a TransE score is a ranking device, and named two
+honest fixes: calibrate the reporting, and target near-miss negatives instead of
+raising the margin globally. Both are now implemented.
+
+### `artemis calibrate` + `predict --probabilities`
+
+τ is fitted by minimising the NLL of the true tail over a deterministic
+subsample of held-out triples (scores computed once, then a log-spaced grid plus
+a local refinement), and stored in the checkpoint — `TransEModel.temperature`,
+format v2, with v1 files still loading as uncalibrated. `predict --probabilities`
+uses it, and refuses to invent a number when the model has none.
+
+The demo, where the whole question started:
+
+```
+top 3 tails for (Dave, spouseOf, ?)  [calibrated, tau=0.3133]
+Erin                                 12.82485   p=0.9832
+Frank                                14.16890   p=0.0135
+Sales                                14.80359   p=0.0018
+```
+
+`12.82` vs `14.17` was a 1.34 gap on a 12.8 scale; it is now 98.3 % against
+1.4 % — a 73× odds ratio, from a τ fitted on the graph (NLL 0.771 → 0.201, mean
+probability of the true tail 0.890).
+
+FB15k-237, calibrating the reference checkpoint on the held-out **valid** split
+(500 triples, ~3 s):
+
+```
+temperature: tau=0.4820  NLL 6.1803 -> 4.8997  (mean probability of the true tail: 0.089)
+```
+
+Two things worth reading off that. The NLL improves by 1.28 nats, so the raw
+scale really was miscalibrated. And the mean probability of the true tail is
+8.9 %, not 90 %: over 14,505 candidates, a filtered MRR of 0.289 *is* an 8.9 %
+average — the honest confidence a 1000-epoch TransE on this data can offer.
+Note also that τ < 1 in both cases (0.31, 0.48): because the raw scale is
+inflated by the relation norms (session 8), the fitted correction *sharpens*.
+
+### `--adv-alpha`: self-adversarial negatives
+
+RotatE's trick, adapted: the negatives drawn for a positive are weighted by
+`softmax(-α · z)` on the group-standardised distances and rescaled to average 1,
+so the hardest of the drawn negatives takes most of the push while the total step
+size is unchanged. Standardising is not cosmetic — a TransE distance is unbounded
+(FB15k L1 distances are ~10²) and `exp(-α·d)` would underflow instantly; with
+standardisation α is dimensionless and the same α means the same thing on a
+22-triple diagram and on FB15k. α = 0 is bit-identical to the plain loop (tested),
+because the weights are exactly 1.0 and the draws are unchanged.
+
+FB15k-237, reference recipe (dim 100, lr 0.01, 1000 epochs, linear decay,
+`--threads 0`), filtered / Hits@10 / raw MRR and wall clock:
+
+| run | filtered MRR | Hits@10 | raw MRR | wall |
+|---|---|---|---|---|
+| `--neg 1` (reference) | 0.2890 | 0.4534 | 0.1820 | 3m41s |
+| `--neg 5` (control) | **0.3376** | **0.5064** | 0.1858 | 12m04s |
+| `--neg 5 --adv-alpha 0.25` | 0.3292 | 0.5036 | 0.1900 | ~14m¹ |
+| `--neg 5 --adv-alpha 1` | 0.2905 | 0.4541 | 0.1897 | 15m21s |
+
+¹ the training clock read 846 s at epoch 1000 (the `time` wrapper was not used
+on this one), plus the ten validation passes and the final test pass.
+
+The control answers the question the first comparison could not, and the answer
+is a clean negative for the RotatE trick *as adapted here*:
+
+- **Plain extra negatives are a big win**: 5 negatives lift filtered MRR from
+  0.2890 to 0.3376 (+0.049) and Hits@10 from 0.453 to 0.506, for ~3.3× the
+  training time. That is the largest single improvement measured in this project
+  so far, and it is not a calibration artefact — the validation curve ends at
+  0.3417 instead of 0.2891.
+- **Concentrating on the hardest negative gives the gain back**: the trend is
+  monotone in the wrong direction — α = 0 (plain) 0.3376, α = 0.25 → 0.3292,
+  α = 1 → 0.2905, the last being essentially the one-negative reference. A mild α
+  is only ~0.008 down, which is around the noise level of these runs, but a sharp
+  one wipes out the entire +0.049. The mechanism is easy to see in hindsight: the
+  weights average 1, but α = 1 puts most of the mass on one of the five
+  negatives, so five negatives collapse back to ≈1 effective negative per
+  positive — which is where its score lands. Hard-negative emphasis also risks
+  pushing *false* negatives: a candidate that is actually true has, by
+  construction, one of the smallest distances.
+- So the ranking of these three knobs is: `--neg` ≫ everything, and among
+  `--neg 5` runs, plain beats mildly adversarial beats sharply adversarial. The
+  flag stays opt-in, defaults are untouched (so every published number keeps its
+  meaning), and no `--margin`/`--adv-alpha` value will be promoted without
+  beating the plain control.
+
+Recommended configuration to quote now: the reference recipe with `--neg 5`
+(`--dim 100 --lr 0.01 --epochs 1000 --lr-schedule linear --lr-min 0.0005 --neg 5`,
+12 minutes with `--threads 0`) — filtered MRR 0.338 / Hits@10 0.506. Session 8's
+conclusion survives in a sharper form: the useful lever was never the score gap,
+it was giving the model more evidence per step.

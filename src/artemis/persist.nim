@@ -2,7 +2,7 @@
 ##
 ## Checkpoint layout (native little-endian, versioned):
 ##   magic      8 bytes   "ARTECKPT"
-##   version    uint32    = 1
+##   version    uint32    = 2 (1 = no calibration temperature)
 ##   dim        uint32
 ##   nEnt       uint32
 ##   nRel       uint32
@@ -21,7 +21,8 @@ import ./types
 
 const
   CheckpointMagic* = "ARTECKPT"
-  CheckpointVersion* = 1'u32
+  CheckpointVersion* = 2'u32
+  MinCheckpointVersion* = 1'u32
 
 proc saveCheckpoint*(m: TransEModel, hp: HyperParams, path: string) =
   let fs = openFileStream(path, fmWrite)
@@ -45,6 +46,8 @@ proc saveCheckpoint*(m: TransEModel, hp: HyperParams, path: string) =
   fs.writeData(addr margin, sizeof margin)
   fs.writeData(addr lr, sizeof lr)
   fs.writeData(addr seed, sizeof seed)
+  var temperature = m.temperature
+  fs.writeData(addr temperature, sizeof temperature)
   for name in m.entities.names:
     var n = name.len.uint32
     fs.writeData(addr n, sizeof n)
@@ -74,7 +77,7 @@ proc loadCheckpoint*(path: string): tuple[m: TransEModel, hp: HyperParams] =
     raise newException(ValueError, "not an Artemis checkpoint: " & path)
   var v, dimU, nEntU, nRelU: uint32
   discard fs.readData(addr v, sizeof v)
-  if v != CheckpointVersion:
+  if v < MinCheckpointVersion or v > CheckpointVersion:
     raise newException(ValueError, "unsupported checkpoint version: " & $v)
   discard fs.readData(addr dimU, sizeof dimU)
   discard fs.readData(addr nEntU, sizeof nEntU)
@@ -87,6 +90,9 @@ proc loadCheckpoint*(path: string): tuple[m: TransEModel, hp: HyperParams] =
   discard fs.readData(addr margin, sizeof margin)
   discard fs.readData(addr lr, sizeof lr)
   discard fs.readData(addr seed, sizeof seed)
+  var temperature = 0.0'f32 # v1 files are uncalibrated
+  if v >= 2'u32:
+    discard fs.readData(addr temperature, sizeof temperature)
   var entities, relations: Vocab
   entities.names = newSeq[string](nEntU.int)
   entities.toId = initTable[string, int](nEntU.int)
@@ -106,6 +112,7 @@ proc loadCheckpoint*(path: string): tuple[m: TransEModel, hp: HyperParams] =
                       nEntU.int * dimU.int * sizeof(float32))
   discard fs.readData(result.m.relEmb.storage.raw_buffer,
                       nRelU.int * dimU.int * sizeof(float32))
+  result.m.temperature = temperature
   result.hp = HyperParams(dim: dimU.int, margin: margin, lr: lr,
                           norm: NormKind(norm.int), bernoulli: bern != 0,
                           seed: seed)
