@@ -102,8 +102,19 @@ proc train*(m: var TransEModel, trainData: seq[Triple], sampler: Sampler,
   var order = trainData
   var orderIdx: seq[int]
   let t0 = epochTime()
+  # Weights are only *active* when they actually say something: a missing
+  # column, an all-ones column, or `--weight-power 0` all leave the classic
+  # shuffled loop in place, bit for bit as before weights existed. (Sample mode
+  # with uniform weights would otherwise become a uniform draw *with
+  # replacement*, which is statistically similar but not the same run.)
+  var nonUnit = false
+  if hp.weightPower != 0.0'f32:
+    for w in weights:
+      if w != 1.0'f32:
+        nonUnit = true
+        break
   let weighted = hp.useWeights and weights.len == trainData.len and
-                 weights.len > 0
+                 weights.len > 0 and nonUnit
   let sampling = weighted and hp.weightMode == wmSample
   var cumulative: seq[float64]
   var totalWeight = 0.0

@@ -434,3 +434,52 @@ Honest note on `nearest` after payload training: `nearest --entity Dave` ranks
 his own `age` literal (`31`) first, because the payload created an entity that is
 connected to him and to almost nothing else. Payload relations are for
 `predict`; `nearest` still describes the edge structure.
+
+---
+
+## Session 7 — a silent regression, and how fast the demo answer forms
+
+Two things came out of a question about the company demo ("what would
+`predict --head Dave --rel spouseOf` be at epoch 25, 100, 400?").
+
+### The regression v0.5.0 shipped
+
+The first reply did not match the README's demo output — `Erin 13.50` instead of
+`Erin 12.82`. Cause: `loadDataset` always fills `Dataset.weights` (1.0 per kept
+triple, whether or not the file had a weight column), and `train` activated
+weighted training whenever the vector length matched. So **every unweighted file
+was routed through `wmSample`**: a uniform draw *with replacement* per epoch
+instead of one shuffled pass. Statistically close, bit-wise different — which
+silently invalidates every reproducibility claim in the docs, and the CLI said
+nothing because its "weights:" line keys off `report.weightedTrain` (0 here).
+
+The fix is an activation rule in `train`: weights are active only when some
+`w != 1.0` and `--weight-power != 0`. A missing column, an all-ones column and
+`--weight-power 0` therefore keep the classic loop byte for byte, which the demo
+immediately confirmed (`Erin 12.82485 / Frank 14.16890 / Sales 14.80359`, exactly
+the pre-weights numbers). The CLI now prints which of those states applies, and a
+test pins the equivalence for both modes. Released as **v0.5.1**; v0.5.0's
+weighting was silently active for unweighted files, so its numbers are not
+comparable with any other release.
+
+### How the demo answer forms (600 epochs, linear lr 0.05 → 0.001)
+
+```
+epoch    lr      rank 1 (true answer)   rank 2     rank 3
+25       0.0480  Erin 13.30034           Frank 13.39505   Sales 13.65197
+50       0.0460  Erin 13.23034           Frank 14.50280   Sales 14.75745
+100      0.0419  Erin 14.47260           Frank 14.82898   Grace 15.73036
+200      0.0337  Erin 12.57453           Frank 14.33859   Sales 14.43567
+400      0.0174  Erin 12.82485           Frank 14.16890   Sales 14.80359
+600      0.0010  Erin 12.82485           Frank 14.16890   Sales 14.80359
+```
+
+`Erin` is rank 1 from the very first checkpoint — on an 11-entity graph the
+answer is easy — but at epoch 25 the margin over `Frank` is 0.09, i.e. a coin
+flip. It widens to ~1.3–1.8 by epoch 50–200 (with a wobble at epoch 100: the
+model is still moving, so *distances are not monotone in training*, only the
+ordering matters), and the runner-up settles on `Frank`. From epoch ~400 the
+numbers are identical to epoch 600: the margin loss is satisfied, no update
+touches those rows, and the remaining lr decay has nothing left to slow down.
+Practical read: for a graph this small, 100–200 epochs is the point of
+diminishing returns; the demo's 600 simply reaches a fixed point.

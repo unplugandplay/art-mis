@@ -347,11 +347,17 @@ folded into the objective the way it could with squared error. Two readings of
 (how often the fact was observed — the edge should be visited more) and
 *confidence* (how much to trust it — the edge should pull harder per visit).
 
-**Consequence.** Both readings are supported, both normalised so `--lr` keeps
-its meaning, and the equivalence cases are tested rather than asserted: all-ones
-weights (and `--weight-power 0`, and an all-zero vector falling back to uniform)
-reproduce the unweighted run bit for bit, because the step-mode loop shuffles
-positions with the same RNG stream the triple shuffle used. A paired fixture
+**Consequence.** Both readings are supported and normalised so `--lr` keeps its
+meaning. Weights are only *active* when they say something: a missing column, an
+all-ones column, and `--weight-power 0` all leave the classic shuffled loop in
+place, so those runs are bit-identical to v0.3.0 (the step-mode loop additionally
+shuffles positions with the same RNG stream the triple shuffle used, so uniform
+weights there are a no-op by construction). This activation rule is not a
+detail: v0.5.0 filled the weight vector with 1.0 for every file and activated
+*sampling* mode on it, which silently changed every unweighted run — uniform
+draws with replacement instead of one shuffled pass — and was caught only by
+noticing that a documented demo number had drifted. A regression test now pins
+all-ones and `--weight-power 0` equivalence in both modes. A paired fixture
 (two disjoint triples, weights swapped) pins the semantic: the heavier edge ends
 up tighter in both modes. Measured on `examples/collaboration.mmd`, the weighted
 run orders all strong ties ahead of every weak one while `--weight-power 0`

@@ -121,6 +121,21 @@ suite "train: weighted graphs":
     discard train(m, data.train, sampler, hp, weights = weights)
     rawCopy(m.entityEmb)
 
+  test "all-ones weights are inactive in both modes (no silent behaviour change)":
+    # Regression: filling `weights` with 1.0 used to route every file through
+    # weighted *sampling*, which changed unweighted runs (and every documented
+    # number) without saying so. Uniform weights must leave the classic
+    # shuffled loop untouched, in sample mode as well as step mode.
+    var unit = newSeq[float32](16)
+    for i in 0 ..< unit.len: unit[i] = 1.0'f32
+    for mode in [wmSample, wmStep]:
+      check trainToyWeighted(42, @[], mode) == trainToyWeighted(42, unit, mode)
+      # ... and so must `--weight-power 0`, whatever the weights are
+      var mixed = newSeq[float32](16)
+      for i in 0 ..< mixed.len: mixed[i] = (i mod 4).float32 + 0.25'f32
+      check trainToyWeighted(42, @[], mode) ==
+            trainToyWeighted(42, mixed, mode, power = 0.0'f32)
+
   test "step mode with all-ones weights is bit-identical to no weights":
     var unit = newSeq[float32](16)
     for i in 0 ..< unit.len: unit[i] = 1.0'f32

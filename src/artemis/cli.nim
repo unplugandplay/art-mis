@@ -212,6 +212,10 @@ proc cmdTrain(args: seq[string]) =
                      &"power {hp.weightPower}, {$hp.weightNorm}-normalised)"
   elif data.weights.len > 0 and not hp.useWeights:
     stderr.writeLine "weights: present but ignored (--no-weights)"
+  elif data.weights.len > 0 and hp.weightPower == 0.0'f32:
+    stderr.writeLine "weights: ignored (--weight-power 0)"
+  elif data.weights.len > 0:
+    stderr.writeLine "weights: none in effect (no column, or every value 1.0) - unweighted run"
   if hp.lrSchedule != lsConstant:
     var desc = &"lr schedule: {$hp.lrSchedule}  lr={hp.lr}  min={hp.lrMin}"
     if hp.lrSchedule == lsExponential:

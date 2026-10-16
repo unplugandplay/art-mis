@@ -160,9 +160,11 @@ hard that edge is fitted:
 | `sample` (default) | each epoch draws as many positives as there are edges, with probability ∝ `weight^--weight-power`: twice the weight, twice the visits |
 | `step` | every edge is still visited once per epoch, but its own SGD step is scaled by the weight — `--weight-norm mean` keeps the average step size, `max` keeps every step ≤ `lr` |
 
-`--weight-power 0` (or `--no-weights`) ignores the column, and that is *provably*
-the same run: all-ones weights reproduce the unweighted embeddings bit for bit.
-The unit suite pins that, plus the property below.
+Weights are only *active* when they say something: a file with no weight column,
+a column where every value is `1.0`, and `--weight-power 0` (or `--no-weights`)
+all take the plain shuffled-SGD path, so those runs are bit-identical to a build
+without weighted support at all. The unit suite pins that equivalence in both
+modes, plus the property below.
 
 `examples/collaboration.mmd` is two teams whose ties are strong (0.9/0.8) inside
 a team and weak (0.1) across:
