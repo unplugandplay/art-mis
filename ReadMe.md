@@ -199,10 +199,11 @@ the same budget settle (+0.046 MRR over constant at 500 epochs, +0.071 at
 stays in the productive lr range longer and only anneals at the end.
 
 `--threads 0` is what makes the table cheap: ranking is ~95 % of a run's wall
-clock, so the 1000-epoch reference costs 3m41s instead of ~35 min, with numbers
-identical to the single-threaded path. Evaluating a saved checkpoint standalone
-needs `--truth train.tsv,valid.tsv` for the same filtered basis (see *Other
-commands*).
+clock, so the 1000-epoch reference costs 3m41s instead of ~15 min single-threaded
+(2.5 min of training, ~11 min of validation passes, ~1 min of test ranking), with
+numbers identical to the single-threaded path. Evaluating a saved checkpoint
+standalone needs `--truth train.tsv,valid.tsv` for the same filtered basis (see
+*Other commands*).
 
 ### Performance (release build, Apple Silicon)
 

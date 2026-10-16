@@ -218,8 +218,10 @@ learning rate, not epochs. Implemented accordingly:
 New reference configuration: `--dim 100 --lr 0.01 --epochs 1000
 --lr-schedule linear --lr-min 0.0005 --eval-every 100 --threads 0` — filtered
 MRR **0.289** / Hits@10 **0.453**, i.e. the published tuned-TransE band
-(≈0.29 / ≈0.46), reached in **3m41s** instead of the ~35 min the same run would
-have cost single-threaded. Validation MRR rose monotonically 0.196 → 0.289
+(≈0.29 / ≈0.46), reached in **3m41s**. Single-threaded the same run would cost
+~15 min (2.5 min training, ~11 min for the ten validation passes, ~1 min for the
+test ranking), and the ablation table above — six runs — would have been ~1.5 h
+instead of 17 min. Validation MRR rose monotonically 0.196 → 0.289
 across all ten evals and was still rising at epoch 1000, so the remaining
 headroom is now genuinely budget/schedule shape rather than correctness.
 
