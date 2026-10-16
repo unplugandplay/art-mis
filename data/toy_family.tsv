@@ -1,0 +1,16 @@
+alice	spouseOf	david
+david	spouseOf	alice
+alice	parentOf	bob
+alice	parentOf	carol
+david	parentOf	bob
+david	parentOf	carol
+bob	siblingOf	carol
+carol	siblingOf	bob
+bob	spouseOf	emma
+emma	spouseOf	bob
+bob	parentOf	frank
+emma	parentOf	frank
+carol	spouseOf	george
+george	spouseOf	carol
+carol	parentOf	heidi
+george	parentOf	heidi
