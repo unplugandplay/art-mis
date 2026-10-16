@@ -169,3 +169,17 @@ test-only truth and reported filtered MRR **0.157** where the protocol (FR-6:
 train ∪ valid ∪ test) gives **0.207** — a silent 25 % understatement. `eval` now
 takes `--truth train.tsv,valid.tsv`, unions the splits, prints `truth set:
 N triples`, and reproduces the reference run's test metrics exactly (D18).
+
+### Training-budget probe: 500 epochs
+
+With evaluation no longer the bottleneck, the obvious experiment is cheap: the
+reference command with `--epochs 500 --eval-every 25 --threads 0` ran in
+**4m14s**. Validation MRR: 0.1619 (e25) → 0.2075 (e200) → 0.2226 peak (e475),
+final 0.2203. Test (best-validation weights, epoch 475): filtered MR 463.55 /
+MRR **0.2199** / Hits@1 0.1462 / Hits@3 0.2408 / Hits@10 **0.3641**.
+
+So 2.5× the budget buys +0.013 MRR / +0.021 Hits@10 over the 200-epoch run, and
+the curve flattens into ±0.005 noise after ~epoch 300. The distance to published
+≈0.29 is therefore *not* purely an epoch count: it needs an lr schedule and/or
+dim 200 (both flagged before, now measured). The budget probe itself cost less
+than one old single-threaded validation pass plus change.

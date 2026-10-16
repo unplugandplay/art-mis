@@ -176,6 +176,20 @@ unchanged to the last printed digit. Re-running the identical command with
 every test metric exactly; evaluating the same checkpoint standalone with
 `--truth train.tsv,valid.tsv` reproduces filtered MRR 0.207 / Hits@10 0.343.
 
+Training budget is the remaining gap. The same command with `--epochs 500
+--eval-every 25` (best-validation weights restored at epoch 475, 4m14s wall
+with `--threads 0`) gives:
+
+| test (n = 40,876 ranks) | MR | MRR | Hits@1 | Hits@3 | Hits@10 |
+|---|---|---|---|---|---|
+| filtered, 200 epochs | 523.4 | 0.207 | 0.140 | 0.221 | 0.343 |
+| filtered, 500 epochs | 463.6 | 0.220 | 0.146 | 0.241 | 0.364 |
+
+2.5× the budget buys +0.013 MRR / +0.021 Hits@10, and the validation curve
+flattens into ±0.005 noise after ~epoch 300 — so the rest of the distance to
+published ≈0.29 needs an lr schedule or dim 200, not just more epochs at a
+constant lr.
+
 ### Performance (release build, Apple Silicon)
 
 Synthetic scale — 15,000 entities × 200 relations × 500,000 random triples,
