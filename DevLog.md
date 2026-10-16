@@ -151,3 +151,21 @@ build is warning-free again), and **`.gitignore` repaired** — `/src/artemis` h
 been ignoring the *source directory*, so no implementation file was ever
 committed in v0.1.0 and a fresh clone could not build; `src/artemis/*.nim` is
 now tracked.
+
+### Reference run reproduced in 2 minutes
+
+The whole FB15k-237 reference command re-run with `--threads 0` finished in
+**2m01s** (was ~15 min) and reproduced every published number exactly: ten
+validation MRRs ending at 0.208, and test raw MR 648.50 / MRR 0.1552 and
+filtered MR 523.36 / MRR 0.2069 / Hits@10 0.3429 — identical to the table
+recorded above, which the single-threaded path produced. The optimal
+`--dim`/`--epochs` sweep that used to cost an hour is now a coffee break.
+
+### `eval --truth`: a protocol gap found while checking it
+
+Reproducing the table from the checkpoint exposed a hole in `artemis eval`: it
+filtered ranks against the evaluated file alone, so `eval --data test.txt` used
+test-only truth and reported filtered MRR **0.157** where the protocol (FR-6:
+train ∪ valid ∪ test) gives **0.207** — a silent 25 % understatement. `eval` now
+takes `--truth train.tsv,valid.tsv`, unions the splits, prints `truth set:
+N triples`, and reproduces the reference run's test metrics exactly (D18).

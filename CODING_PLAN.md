@@ -209,6 +209,8 @@ with `numpy` without errors (script in `scripts/check_export.py`).
 
 - [x] `parseopt`-based dispatch: `train`, `eval`, `export`, `nearest` per PRD §FR-8.
 - [x] Flag → `HyperParams` mapping table; `--help` per subcommand.
+- [x] `eval --truth FILE[,FILE]` and `--threads N`: filtered ranking against the
+  full known-true set (FR-6) and parallel ranking (D16, D18).
 - [x] `nearest`: cosine / Euclidean over entity rows, top-k print.
 - [x] Man-style README: install, quickstart on toy data, FB15k-237 repro
   commands, flag reference, results table.

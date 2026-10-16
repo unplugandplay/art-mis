@@ -231,3 +231,21 @@ hoisted out of the candidate loop (identical rounding order — one addition les
 per candidate element); the head side is deliberately left as `(e + r) − t`,
 since hoisting `r − t` would associate the sum differently and change the last
 bits.
+
+## D18 — Standalone `eval` takes `--truth` files for filtered ranking
+
+**Decision.** `artemis eval` always filters against the file it evaluates, and
+`--truth train.tsv,valid.tsv` adds further known-true splits to that set (the
+union is what `--valid/--test` given to `train` already use). The command prints
+`truth set: N triples` so the filtering basis is never implicit.
+
+**Context.** FR-6 defines filtered metrics against *all* known-true triples, but
+`eval --data test.tsv` only knew the test split. Measured on the FB15k-237
+reference checkpoint: filtered MRR 0.157 (test-only truth) vs 0.207 (protocol) —
+a silent 25 % understatement of the headline metric, and the trap of reporting
+it as "filtered".
+
+**Consequence.** The documented protocol is reproducible from a checkpoint
+alone; the README quickstart and the FB15k-237 section spell out the flag, and
+the reference run's own test metrics are reproduced exactly
+(`--truth train.txt,valid.txt` → filtered MRR 0.2069 / Hits@10 0.3429).

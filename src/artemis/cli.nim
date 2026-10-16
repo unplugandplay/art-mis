@@ -1,5 +1,5 @@
 ## Command-line interface: train / eval / export / nearest.
-import std/[parseopt, os, strutils, strformat, tables, random, json,
+import std/[parseopt, os, strutils, strformat, tables, sets, random, json,
             math, algorithm, cpuinfo]
 import ./types
 import ./io
@@ -14,7 +14,7 @@ artemis — TransE knowledge-graph embeddings in Nim
 
 Usage:
   artemis train   --data train.tsv [--valid valid.tsv --test test.tsv] [options]
-  artemis eval    --model checkpoint.bin --data test.tsv [--threads N]
+  artemis eval    --model checkpoint.bin --data test.tsv [--truth train.tsv,valid.tsv]
   artemis export  --model checkpoint.bin [--out dir]
   artemis nearest --model checkpoint.bin --entity NAME [--k 10] [--metric cosine|l2]
 
@@ -35,6 +35,11 @@ Train options:
   --delimiter CH   tab | comma | space | other    (default tab)
   --out DIR        output directory               (default .)
   --quiet          suppress progress
+
+Eval options:
+  --threads N      eval worker threads            (default 1; 0 = one per core)
+  --truth F[,F...] extra known-true files for filtered ranking (e.g. train,valid)
+  --delimiter CH   tab | comma | space | other    (default tab)
 """
 
 proc die(msg: string) {.noreturn.} =
@@ -174,7 +179,20 @@ proc cmdEval(args: seq[string]) =
   let data = toTriples(raws, model.entities, model.relations, skipped)
   if skipped > 0:
     stderr.writeLine &"warning: skipped {skipped} triples with unknown names"
-  let truth = buildTruthSet(data)
+  # Filtered ranking needs every known-true triple, not just the evaluated
+  # split: `--truth` adds the other files (standard protocol: train+valid+test).
+  var known = data
+  for spec in opts.getOrDefault("truth", "").split(','):
+    let path = spec.strip
+    if path.len == 0: continue
+    var m2, s2 = 0
+    let extra = toTriples(loadRawTriples(path, hp2.delimiter, m2),
+                          model.entities, model.relations, s2)
+    if m2 + s2 > 0:
+      stderr.writeLine &"warning: {path}: ignored {m2 + s2} lines (malformed or unknown names)"
+    known.add extra
+  let truth = buildTruthSet(known)
+  stderr.writeLine &"truth set: {truth.len} triples"
   let r = evaluate(model, data, truth, hp2.norm, opts.optThreads())
   echo $r
 

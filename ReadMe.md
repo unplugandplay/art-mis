@@ -56,7 +56,8 @@ alice	parentOf	bob
 Malformed lines are skipped and counted. Ids are assigned in first-appearance
 order, so runs are reproducible. For proper evaluation, train on one file and
 evaluate on held-out triples — with `--valid` and `--test` supplied to `train`,
-filtered metrics use all splits as the known-truth set.
+filtered metrics use all splits as the known-truth set; standalone `eval` needs
+`--truth train.tsv,valid.tsv` to do the same.
 
 ## Commands
 
@@ -84,10 +85,16 @@ filtered metrics use all splits as the known-truth set.
 ### Other commands
 
 ```sh
-artemis eval    --model checkpoint.bin --data test.tsv [--threads N]
+artemis eval    --model checkpoint.bin --data test.tsv [--threads N] \
+                [--truth train.tsv,valid.tsv]
 artemis export  --model checkpoint.bin --out dir
 artemis nearest --model checkpoint.bin --entity NAME [--k 10] [--metric cosine|l2]
 ```
+
+`eval` filters ranks against the file it is evaluating; pass `--truth` with the
+other splits to get the standard train∪valid∪test protocol — on the FB15k-237
+reference checkpoint that is the difference between filtered MRR 0.157
+(test-only truth) and the 0.207 reported below.
 
 ## Library usage
 
@@ -164,7 +171,10 @@ training time, not correctness (see `DevLog.md` for the trajectory).
 
 The ten validation passes dominate that wall clock; `--threads 0` runs them on
 every core (65 s → 10 s per pass on 8 cores here) and leaves the numbers above
-unchanged to the last printed digit, cutting the whole run to under 3 minutes.
+unchanged to the last printed digit. Re-running the identical command with
+`--threads 0` finished in **2m01s** and reproduced all ten validation MRRs and
+every test metric exactly; evaluating the same checkpoint standalone with
+`--truth train.tsv,valid.tsv` reproduces filtered MRR 0.207 / Hits@10 0.343.
 
 ### Performance (release build, Apple Silicon)
 
